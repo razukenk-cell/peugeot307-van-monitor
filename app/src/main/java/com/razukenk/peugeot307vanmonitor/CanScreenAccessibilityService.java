@@ -3,10 +3,17 @@ package com.razukenk.peugeot307vanmonitor;
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Color;
+import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
+import android.view.View;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -22,11 +29,17 @@ public class CanScreenAccessibilityService extends AccessibilityService {
     private final Map<Integer, Integer> lastKeyStates = new HashMap<>();
     private String lastOtherFrame = "";
 
+    private WindowManager windowManager;
+    private View overlayView;
+    private CarDoorView overlayCar;
+    private TextView overlayText;
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable pollRunnable = new Runnable() {
         @Override public void run() {
             try {
                 scanActiveWindow();
+                updateAccessibilityOverlay();
             } catch (Throwable ignored) {
             }
             handler.postDelayed(this, 180);
@@ -37,7 +50,10 @@ public class CanScreenAccessibilityService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         prefs = getSharedPreferences("monitor", Context.MODE_PRIVATE);
-        prefs.edit().putString("accessibility_status", "включён").apply();
+        prefs.edit()
+                .putString("accessibility_status", "включён")
+                .putBoolean("accessibility_overlay_active", false)
+                .apply();
         handler.removeCallbacks(pollRunnable);
         handler.post(pollRunnable);
     }
@@ -180,6 +196,102 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                 " | checksum=" + (frame.checksumOk ? "OK" : "BAD"));
     }
 
+    private void updateAccessibilityOverlay() {
+        if (prefs == null) return;
+
+        boolean enabled = prefs.getBoolean("overlay_enabled", false);
+        if (!enabled) {
+            removeOverlay();
+            prefs.edit().putBoolean("accessibility_overlay_active", false).apply();
+            return;
+        }
+
+        if (overlayView == null) {
+            try {
+                createOverlay();
+                prefs.edit().putBoolean("accessibility_overlay_active", true).apply();
+            } catch (Throwable t) {
+                prefs.edit()
+                        .putBoolean("accessibility_overlay_active", false)
+                        .putString("accessibility_overlay_error",
+                                t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage()))
+                        .apply();
+                return;
+            }
+        }
+
+        int mask = prefs.getInt("door_mask", 0);
+        if (overlayCar != null) overlayCar.setDoorMask(mask);
+
+        if (overlayText != null) {
+            String key = prefs.getString("last_key_name", "—");
+            String direct = prefs.getString("direct_status", "");
+            overlayText.setText(VehicleData.doorsText(mask) +
+                    "\nКнопка: " + key +
+                    (direct.startsWith("ПОДКЛЮЧЕНО") ? "\nDIRECT: OK" : ""));
+            overlayText.setTextColor(mask == 0
+                    ? Color.LTGRAY
+                    : Color.rgb(255, 105, 105));
+        }
+    }
+
+    private void createOverlay() {
+        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(8, 5, 8, 5);
+        box.setBackgroundColor(Color.argb(235, 12, 14, 18));
+
+        TextView title = new TextView(this);
+        title.setText("PEUGEOT 307");
+        title.setTextSize(14);
+        title.setTextColor(Color.WHITE);
+        title.setGravity(Gravity.CENTER);
+        box.addView(title, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        overlayCar = new CarDoorView(this);
+        box.addView(overlayCar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 180));
+
+        overlayText = new TextView(this);
+        overlayText.setTextSize(12);
+        overlayText.setTextColor(Color.LTGRAY);
+        overlayText.setGravity(Gravity.CENTER);
+        box.addView(overlayText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                290,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE |
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.TOP | Gravity.END;
+        lp.x = 4;
+        lp.y = 62;
+
+        windowManager.addView(box, lp);
+        overlayView = box;
+    }
+
+    private void removeOverlay() {
+        if (overlayView != null && windowManager != null) {
+            try {
+                windowManager.removeView(overlayView);
+            } catch (Throwable ignored) {
+            }
+        }
+        overlayView = null;
+        overlayCar = null;
+        overlayText = null;
+    }
+
     private String keyStateName(int state) {
         switch (state) {
             case 0x00: return "RELEASED";
@@ -198,7 +310,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             File capture = new File(getFilesDir(), "capture.log");
             boolean append = capture.exists() && capture.length() < 2L * 1024L * 1024L;
             try (FileWriter w = new FileWriter(capture, append)) {
-                if (!append) w.write("# Peugeot 307 CarInfo capture v0.4\n");
+                if (!append) w.write("# Peugeot 307 CarInfo capture v0.6\n");
                 String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
                 w.write(ts + " " + text + "\n");
             }
@@ -214,7 +326,13 @@ public class CanScreenAccessibilityService extends AccessibilityService {
     @Override
     public void onDestroy() {
         handler.removeCallbacks(pollRunnable);
-        if (prefs != null) prefs.edit().putString("accessibility_status", "выключен").apply();
+        removeOverlay();
+        if (prefs != null) {
+            prefs.edit()
+                    .putString("accessibility_status", "выключен")
+                    .putBoolean("accessibility_overlay_active", false)
+                    .apply();
+        }
         super.onDestroy();
     }
 }
