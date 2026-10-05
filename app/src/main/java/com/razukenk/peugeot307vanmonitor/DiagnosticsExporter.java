@@ -23,10 +23,10 @@ final class DiagnosticsExporter {
     static Uri export(Context context) throws Exception {
         SharedPreferences p = context.getSharedPreferences("monitor", Context.MODE_PRIVATE);
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String filename = "peugeot307_diagnostic_v04_" + stamp + ".txt";
+        String filename = "peugeot307_diagnostic_v06_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 CarInfo diagnostic v0.4\n");
+        report.append("Peugeot 307 CarInfo diagnostic v0.6\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
@@ -51,6 +51,14 @@ final class DiagnosticsExporter {
         report.append("B4: ").append(p.getInt("status_b4", -1)).append("\n");
         report.append("B8: ").append(p.getInt("status_b8", -1)).append("\n\n");
 
+        report.append("[DIRECT CarData]\n");
+        report.append("Status: ").append(p.getString("direct_status", "unknown")).append("\n");
+        report.append("Listener: ").append(p.getString("direct_listener", "unknown")).append("\n");
+        report.append("Key count: ").append(p.getInt("direct_key_count", 0)).append("\n");
+        report.append("Last key: ").append(p.getString("direct_last_key", "(none)")).append("\n");
+        report.append("Last value: ").append(p.getString("direct_last_value", "(none)")).append("\n");
+        report.append("Snapshot:\n").append(p.getString("direct_snapshot", "(none)")).append("\n\n");
+
         report.append("[MONITOR]\n");
         report.append("Service: ").append(p.getString("service_status", "unknown")).append("\n");
         report.append("Accessibility: ").append(p.getString("accessibility_status", "unknown")).append("\n");
@@ -70,6 +78,17 @@ final class DiagnosticsExporter {
         File capture = new File(context.getFilesDir(), "capture.log");
         if (capture.exists()) {
             try (BufferedReader br = new BufferedReader(new FileReader(capture))) {
+                String line;
+                while ((line = br.readLine()) != null) report.append(line).append('\n');
+            }
+        } else {
+            report.append("(empty)\n");
+        }
+
+        report.append("\n[DIRECT CARDATA LOG]\n");
+        File direct = new File(context.getFilesDir(), "direct_car_data.log");
+        if (direct.exists()) {
+            try (BufferedReader br = new BufferedReader(new FileReader(direct))) {
                 String line;
                 while ((line = br.readLine()) != null) report.append(line).append('\n');
             }
