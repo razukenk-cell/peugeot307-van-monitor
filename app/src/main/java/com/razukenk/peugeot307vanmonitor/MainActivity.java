@@ -2,6 +2,7 @@ package com.razukenk.peugeot307vanmonitor;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -12,6 +13,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -35,6 +37,7 @@ public class MainActivity extends Activity {
     private CarDoorView carView;
     private TextView connection;
     private TextView doorText;
+    private TextView bridge;
     private TextView telemetry;
     private TextView direct;
     private TextView steering;
@@ -42,7 +45,6 @@ public class MainActivity extends Activity {
     private TextView raw;
     private TextView accessibility;
     private CheckBox autostart;
-    private CheckBox overlay;
 
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
@@ -59,6 +61,10 @@ public class MainActivity extends Activity {
         requestNotificationPermissionIfNeeded();
         startMonitor(false);
         handler.post(refresh);
+
+        if (prefs.getBoolean("bridge_enabled", false) && isAccessibilityServiceEnabled()) {
+            handler.postDelayed(() -> StockCanbusBridge.launch(this), 700);
+        }
     }
 
     private void buildUi() {
@@ -71,7 +77,7 @@ public class MainActivity extends Activity {
         root.setPadding(18, 10, 18, 20);
         scroll.addView(root);
 
-        TextView title = text("PEUGEOT 307 CARINFO  v0.7", 24, Color.WHITE);
+        TextView title = text("PEUGEOT 307 CARINFO  v0.8", 24, Color.WHITE);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
 
@@ -80,13 +86,19 @@ public class MainActivity extends Activity {
         connection.setPadding(0, 3, 0, 7);
         root.addView(connection);
 
+        Button auto = button("АВТО CANBUS — ЗАПУСТИТЬ", v -> startAutoCanbus());
+        auto.setTextSize(17);
+        auto.setMinHeight(66);
+        root.addView(auto);
+
         LinearLayout dash = new LinearLayout(this);
         dash.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(dash);
 
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
-        dash.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.15f));
+        dash.addView(left, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.15f));
 
         carView = new CarDoorView(this);
         left.addView(carView, new LinearLayout.LayoutParams(
@@ -99,31 +111,16 @@ public class MainActivity extends Activity {
         LinearLayout right = new LinearLayout(this);
         right.setOrientation(LinearLayout.VERTICAL);
         right.setPadding(12, 0, 0, 0);
-        dash.addView(right, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.85f));
+        dash.addView(right, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.85f));
 
-        direct = card(right, "DIRECT CarData");
-        telemetry = card(right, "Данные / кандидаты");
+        bridge = card(right, "AUTO CANBUS bridge");
+        direct = card(right, "CarData (диагностика)");
+        telemetry = card(right, "Данные автомобиля");
         steering = card(right, "Подрулевой пульт");
-        source = card(right, "Источник");
-        accessibility = card(right, "Живой CANBUS-экран");
+        accessibility = card(right, "Accessibility");
+        source = card(right, "Fallback");
         raw = card(right, "RAW 0x01");
-
-        overlay = new CheckBox(this);
-        overlay.setText("Плавающая машина поверх штатного CANBUS-лога");
-        overlay.setTextColor(Color.WHITE);
-        overlay.setTextSize(15);
-        overlay.setChecked(prefs.getBoolean("overlay_enabled", false));
-        overlay.setOnCheckedChangeListener((buttonView, enabled) -> {
-            if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                prefs.edit().putBoolean("overlay_enabled", false).apply();
-                buttonView.setChecked(false);
-                requestOverlayPermission();
-                return;
-            }
-            prefs.edit().putBoolean("overlay_enabled", enabled).apply();
-            startMonitor(false);
-        });
-        root.addView(overlay);
 
         autostart = new CheckBox(this);
         autostart.setText("Автозапуск CarInfo");
@@ -138,31 +135,33 @@ public class MainActivity extends Activity {
         row1.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(row1);
 
-        row1.addView(button("Чтение экрана", v -> openAccessibility()),
+        row1.addView(button("Спец. возможности", v -> openAccessibility()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row1.addView(button("Разрешить поверх окон", v -> requestOverlayPermission()),
+        row1.addView(button("ОСТАНОВИТЬ AUTO CANBUS", v -> stopAutoCanbus()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row1.addView(button("Папка логов", v -> chooseFolder()),
+        row1.addView(button("Экспорт диагностики", v -> exportDiagnostics()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         LinearLayout row2 = new LinearLayout(this);
         row2.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(row2);
 
-        row2.addView(button("Экспорт лога", v -> exportDiagnostics()),
+        row2.addView(button("Папка старых логов", v -> chooseFolder()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row2.addView(button("НАЙТИ И СКОПИРОВАТЬ CANBUS APK", v -> exportCanbusApk()),
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f));
-        row2.addView(button("Очистить", v -> {
+        row2.addView(button("Скопировать CANBUS APK", v -> exportCanbusApk()),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row2.addView(button("Очистить диагностику", v -> {
             MonitorService.clearCapture(this);
-            Toast.makeText(this, "Запись очищена", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Диагностическая запись очищена", Toast.LENGTH_SHORT).show();
         }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView help = text(
-                "v0.7 читает точные системные ключи штатного CANBUS: state.canbus.door_state.i и state.canbus.out_temp.s. " +
-                "Если DIRECT станет «ПОДКЛЮЧЕНО», штатный CANBUS-лог открывать больше не нужно.\n" +
-                "Плавающее окно теперь создаётся через Accessibility overlay, чтобы быть выше штатного окна лога. " +
-                "Никаких команд в VAN/CAN приложение не передаёт.",
+                "v0.8 больше не требует вручную открывать экран LOG. Кнопка AUTO CANBUS сама запускает " +
+                "экспортированный штатный Canbus Debug Tool, пытается включить Capture и держит его " +
+                "под полноэкранным интерфейсом CarInfo. Штатный процесс остаётся единственным владельцем " +
+                "/dev/ttyCanbus, поэтому подрулевые кнопки и CAN-box не перехватываются вторым UART-reader.\n\n" +
+                "Важно: один раз должна быть включена служба «Peugeot 307 CANBUS screen reader» в " +
+                "Специальных возможностях. Это read-only мост — CarInfo не отправляет пакеты в VAN/CAN.",
                 13, Color.LTGRAY);
         help.setPadding(0, 8, 0, 2);
         root.addView(help);
@@ -201,45 +200,84 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private void openAccessibility() {
-        try {
-            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
-            Toast.makeText(this, "Включите «Peugeot 307 CANBUS screen reader»", Toast.LENGTH_LONG).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "Не удалось открыть специальные возможности", Toast.LENGTH_LONG).show();
+    private void startAutoCanbus() {
+        prefs.edit()
+                .putBoolean("bridge_enabled", true)
+                .putBoolean("bridge_pending", true)
+                .putString("bridge_status", "Подготовка AUTO CANBUS…")
+                .apply();
+
+        startMonitor(false);
+
+        if (!isAccessibilityServiceEnabled()) {
+            Toast.makeText(this,
+                    "Сначала включите «Peugeot 307 CANBUS screen reader». После возврата AUTO CANBUS запустится сам.",
+                    Toast.LENGTH_LONG).show();
+            openAccessibility();
+            return;
+        }
+
+        launchBridgeNow();
+    }
+
+    private void launchBridgeNow() {
+        prefs.edit().putBoolean("bridge_pending", false).apply();
+        boolean ok = StockCanbusBridge.launch(this);
+        if (!ok) {
+            Toast.makeText(this,
+                    "Не удалось открыть штатный Canbus Debug Tool. Экспортируйте диагностику.",
+                    Toast.LENGTH_LONG).show();
         }
     }
 
-    private void requestOverlayPermission() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)) {
-            prefs.edit().putBoolean("overlay_enabled", true).apply();
-            overlay.setChecked(true);
-            startMonitor(false);
-            Toast.makeText(this, "Плавающее окно включено", Toast.LENGTH_SHORT).show();
-            return;
-        }
+    private void stopAutoCanbus() {
+        StockCanbusBridge.disable(this);
+        prefs.edit().putBoolean("bridge_pending", false).apply();
+        Toast.makeText(this, "AUTO CANBUS остановлен", Toast.LENGTH_SHORT).show();
+    }
+
+    private boolean isAccessibilityServiceEnabled() {
         try {
-            Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:" + getPackageName()));
-            prefs.edit().putBoolean("overlay_pending", true).apply();
-            startActivity(intent);
-            Toast.makeText(this, "Разрешите «Показывать поверх других приложений», затем вернитесь", Toast.LENGTH_LONG).show();
+            String enabled = Settings.Secure.getString(
+                    getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (TextUtils.isEmpty(enabled)) return false;
+
+            ComponentName mine = new ComponentName(this, CanScreenAccessibilityService.class);
+            TextUtils.SimpleStringSplitter splitter = new TextUtils.SimpleStringSplitter(':');
+            splitter.setString(enabled);
+
+            while (splitter.hasNext()) {
+                ComponentName component = ComponentName.unflattenFromString(splitter.next());
+                if (component != null && component.equals(mine)) return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private void openAccessibility() {
+        try {
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            Toast.makeText(this,
+                    "Включите «Peugeot 307 CANBUS screen reader»",
+                    Toast.LENGTH_LONG).show();
         } catch (Exception e) {
-            Toast.makeText(this, "Не удалось открыть разрешение поверх окон", Toast.LENGTH_LONG).show();
+            Toast.makeText(this,
+                    "Не удалось открыть Специальные возможности",
+                    Toast.LENGTH_LONG).show();
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)) {
-            if (prefs.getBoolean("overlay_pending", false)) {
-                prefs.edit().putBoolean("overlay_pending", false).putBoolean("overlay_enabled", true).apply();
-            }
-            if (prefs.getBoolean("overlay_enabled", false) && overlay != null) {
-                overlay.setChecked(true);
-                startMonitor(false);
-            }
+
+        if (prefs != null &&
+                prefs.getBoolean("bridge_enabled", false) &&
+                prefs.getBoolean("bridge_pending", false) &&
+                isAccessibilityServiceEnabled()) {
+            handler.postDelayed(this::launchBridgeNow, 450);
         }
     }
 
@@ -255,14 +293,21 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQ_TREE && resultCode == RESULT_OK && data != null && data.getData() != null) {
+        if (requestCode == REQ_TREE &&
+                resultCode == RESULT_OK &&
+                data != null &&
+                data.getData() != null) {
+
             Uri uri = data.getData();
             int flags = data.getFlags() &
-                    (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    (Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+
             try {
                 getContentResolver().takePersistableUriPermission(uri, flags);
             } catch (Exception ignored) {
             }
+
             prefs.edit().putString("log_tree_uri", uri.toString()).apply();
             Toast.makeText(this, "Папка CANBUS сохранена", Toast.LENGTH_SHORT).show();
             startMonitor(false);
@@ -274,48 +319,43 @@ public class MainActivity extends Activity {
             Intent i = new Intent(this, MonitorService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
             else startService(i);
+
             if (toast) Toast.makeText(this, "Монитор запущен", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
-            Toast.makeText(this, "Не удалось запустить: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this,
+                    "Не удалось запустить монитор: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
         }
     }
 
     private void exportDiagnostics() {
         try {
             DiagnosticsExporter.export(this);
-            Toast.makeText(this, "Сохранено в Downloads/Peugeot307VanMonitor", Toast.LENGTH_LONG).show();
+            Toast.makeText(this,
+                    "Сохранено в Downloads/Peugeot307VanMonitor",
+                    Toast.LENGTH_LONG).show();
         } catch (Exception e) {
-            Toast.makeText(this, "Ошибка экспорта: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this,
+                    "Ошибка экспорта: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
         }
     }
 
     private void exportCanbusApk() {
-        Toast.makeText(this, "Ищу штатное CANBUS/MCU-приложение…", Toast.LENGTH_LONG).show();
+        Toast.makeText(this,
+                "Ищу штатное CANBUS/MCU-приложение…",
+                Toast.LENGTH_LONG).show();
+
         new Thread(() -> {
             try {
                 CanbusApkExporter.Result result = CanbusApkExporter.findAndCopy(this);
-                runOnUiThread(() -> Toast.makeText(this,
-                        result.details,
-                        Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> Toast.makeText(
+                        this, result.details, Toast.LENGTH_LONG).show());
             } catch (Exception e) {
-                runOnUiThread(() -> Toast.makeText(this,
+                runOnUiThread(() -> Toast.makeText(
+                        this,
                         "Ошибка копирования CANBUS APK: " + e.getMessage(),
                         Toast.LENGTH_LONG).show());
-            }
-        }).start();
-    }
-
-    private void exportSystemProbe() {
-        Toast.makeText(this, "Собираю системную диагностику и доступные CANBUS APK…", Toast.LENGTH_LONG).show();
-        new Thread(() -> {
-            try {
-                SystemProbeExporter.export(this);
-                runOnUiThread(() -> Toast.makeText(this,
-                        "Готово: Downloads/Peugeot307VanMonitor/peugeot307_system_probe_....zip",
-                        Toast.LENGTH_LONG).show());
-            } catch (Exception e) {
-                runOnUiThread(() -> Toast.makeText(this,
-                        "Ошибка probe: " + e.getMessage(), Toast.LENGTH_LONG).show());
             }
         }).start();
     }
@@ -324,32 +364,46 @@ public class MainActivity extends Activity {
         int mask = prefs.getInt("door_mask", 0);
         carView.setDoorMask(mask);
         doorText.setText(VehicleData.doorsText(mask));
-        doorText.setTextColor(mask == 0 ? Color.rgb(170, 220, 170) : Color.rgb(255, 105, 105));
+        doorText.setTextColor(mask == 0
+                ? Color.rgb(170, 220, 170)
+                : Color.rgb(255, 105, 105));
 
         long last = prefs.getLong("last_activity_ms", 0);
-        long age = last == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - last;
+        long age = last == 0
+                ? Long.MAX_VALUE
+                : System.currentTimeMillis() - last;
+
         if (age < 2500) {
-            connection.setText("CANBUS ● данные идут    mask=" + String.format(Locale.US, "0x%02X", mask));
+            connection.setText("CANBUS ● данные идут    mask=" +
+                    String.format(Locale.US, "0x%02X", mask));
             connection.setTextColor(Color.rgb(110, 230, 130));
         } else if (last > 0) {
             connection.setText("CANBUS ○ последнее " +
-                    DateFormat.getTimeInstance(DateFormat.MEDIUM).format(new Date(last)));
+                    DateFormat.getTimeInstance(DateFormat.MEDIUM)
+                            .format(new Date(last)));
             connection.setTextColor(Color.rgb(240, 190, 90));
         } else {
-            connection.setText("CANBUS ○ ждём штатный лог/экран");
+            connection.setText("CANBUS ○ нажмите AUTO CANBUS");
             connection.setTextColor(Color.LTGRAY);
         }
 
+        long bridgeFrame = prefs.getLong("bridge_last_frame_ms", 0);
+        long bridgeAge = bridgeFrame == 0
+                ? Long.MAX_VALUE
+                : System.currentTimeMillis() - bridgeFrame;
+
+        bridge.setText(
+                prefs.getString("bridge_status", "выключен") +
+                "\nCapture: " + prefs.getString("bridge_capture_status", "—") +
+                "\nRAW: " + (bridgeAge < 1500 ? "АКТИВЕН" : "нет свежих кадров") +
+                "\nОшибка: " + prefs.getString("bridge_error", "—"));
+
         direct.setText(
                 prefs.getString("direct_status", "проверка…") +
-                "\nExact API: " + (prefs.getBoolean("direct_exact_api", false) ? "OK" : "нет") +
-                "\nДвери direct: " + prefs.getString("direct_door_state_hex", "—") +
-                (prefs.getBoolean("direct_hood_open", false) ? "  КАПОТ ОТКРЫТ" : "") +
-                "\nНаружная t° direct: " + prefs.getString("direct_out_temp", "—") +
-                "\nCAN-box: " + prefs.getString("direct_canbox_version", "—") +
-                "\nListener: " + prefs.getString("direct_listener", "—") +
-                "\nПоследнее: " + prefs.getString("direct_last_key", "—") +
-                " = " + prefs.getString("direct_last_value", "—"));
+                "\nExact door error: " +
+                prefs.getString("direct_exact_error", "—") +
+                "\nCurrent CANBUS: " +
+                prefs.getString("direct_current_canbus", "—"));
 
         telemetry.setText(VehicleData.telemetrySummary(prefs));
 
@@ -358,22 +412,27 @@ public class MainActivity extends Activity {
                 "\nID: " + prefs.getString("last_key_id", "—") +
                 "   " + prefs.getString("last_key_state", "—"));
 
+        accessibility.setText(
+                (isAccessibilityServiceEnabled() ? "ВКЛЮЧЕНА" : "ВЫКЛЮЧЕНА") +
+                "\n" + prefs.getString("accessibility_status", "—") +
+                "\nStock package: " +
+                prefs.getString("screen_package", "—"));
+
         source.setText(
+                "TXT fallback: " +
                 prefs.getString("service_status", "остановлен") +
                 "\nФайл: " + prefs.getString("current_file", "—"));
-
-        accessibility.setText(
-                prefs.getString("accessibility_status", "не включён") +
-                "\nПакет CANBUS: " + prefs.getString("screen_package", "—") +
-                "\nSCREEN: " + prefs.getLong("screen_frames", 0));
 
         raw.setText(VehicleData.rawStatusBytes(prefs));
     }
 
     private void requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33 &&
-                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATIONS);
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                        PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    REQ_NOTIFICATIONS);
         }
     }
 
