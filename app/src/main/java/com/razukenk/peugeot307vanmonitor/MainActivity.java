@@ -71,7 +71,7 @@ public class MainActivity extends Activity {
         root.setPadding(18, 10, 18, 20);
         scroll.addView(root);
 
-        TextView title = text("PEUGEOT 307 CARINFO  v0.6", 24, Color.WHITE);
+        TextView title = text("PEUGEOT 307 CARINFO  v0.7", 24, Color.WHITE);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
 
@@ -159,7 +159,7 @@ public class MainActivity extends Activity {
         }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView help = text(
-                "v0.6 сначала пытается подключиться прямо к системному android.cartech.cardata.CarData. " +
+                "v0.7 читает точные системные ключи штатного CANBUS: state.canbus.door_state.i и state.canbus.out_temp.s. " +
                 "Если DIRECT станет «ПОДКЛЮЧЕНО», штатный CANBUS-лог открывать больше не нужно.\n" +
                 "Плавающее окно теперь создаётся через Accessibility overlay, чтобы быть выше штатного окна лога. " +
                 "Никаких команд в VAN/CAN приложение не передаёт.",
@@ -342,8 +342,12 @@ public class MainActivity extends Activity {
 
         direct.setText(
                 prefs.getString("direct_status", "проверка…") +
+                "\nExact API: " + (prefs.getBoolean("direct_exact_api", false) ? "OK" : "нет") +
+                "\nДвери direct: " + prefs.getString("direct_door_state_hex", "—") +
+                (prefs.getBoolean("direct_hood_open", false) ? "  КАПОТ ОТКРЫТ" : "") +
+                "\nНаружная t° direct: " + prefs.getString("direct_out_temp", "—") +
+                "\nCAN-box: " + prefs.getString("direct_canbox_version", "—") +
                 "\nListener: " + prefs.getString("direct_listener", "—") +
-                "\nКлючей: " + prefs.getInt("direct_key_count", 0) +
                 "\nПоследнее: " + prefs.getString("direct_last_key", "—") +
                 " = " + prefs.getString("direct_last_value", "—"));
 
