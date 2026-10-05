@@ -47,6 +47,7 @@ public class MonitorService extends Service {
     private String currentFileUri = "";
     private int processedLines = 0;
     private String lastVehiclePayload = "";
+    private DirectCarDataReader directReader;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private WindowManager windowManager;
@@ -72,6 +73,11 @@ public class MonitorService extends Service {
         startForeground(NOTIFICATION_ID, buildNotification("Peugeot 307: монитор CANBUS запущен"));
         prefs.edit().putString("service_status", "работает").apply();
 
+        directReader = new DirectCarDataReader(this);
+        boolean direct = directReader.start();
+        prefs.edit().putString("service_status",
+                direct ? "работает; DIRECT CarData подключён" : "работает; DIRECT недоступен, fallback").apply();
+
         executor = Executors.newSingleThreadScheduledExecutor();
         executor.scheduleWithFixedDelay(this::pollSafely, 0, 650, TimeUnit.MILLISECONDS);
 
@@ -89,6 +95,9 @@ public class MonitorService extends Service {
 
     private void pollSafely() {
         try {
+            if (directReader != null && directReader.isConnected()) {
+                directReader.poll();
+            }
             poll();
         } catch (Throwable t) {
             prefs.edit()
@@ -231,9 +240,10 @@ public class MonitorService extends Service {
 
     private void updateOverlay() {
         boolean enabled = prefs.getBoolean("overlay_enabled", false);
+        boolean accessibilityOverlay = prefs.getBoolean("accessibility_overlay_active", false);
         boolean permitted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this);
 
-        if (!enabled || !permitted) {
+        if (!enabled || accessibilityOverlay || !permitted) {
             removeOverlay();
             return;
         }
@@ -332,7 +342,7 @@ public class MonitorService extends Service {
             File capture = new File(getFilesDir(), "capture.log");
             boolean append = capture.exists() && capture.length() < MAX_CAPTURE_BYTES;
             try (FileWriter w = new FileWriter(capture, append)) {
-                if (!append) w.write("# Peugeot 307 CarInfo capture v0.4\n");
+                if (!append) w.write("# Peugeot 307 CarInfo capture v0.6\n");
                 String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
                 w.write(ts + " " + text + "\n");
             }
@@ -343,6 +353,8 @@ public class MonitorService extends Service {
     static void clearCapture(Context context) {
         File capture = new File(context.getFilesDir(), "capture.log");
         if (capture.exists()) capture.delete();
+        File direct = new File(context.getFilesDir(), "direct_car_data.log");
+        if (direct.exists()) direct.delete();
 
         SharedPreferences.Editor e = context.getSharedPreferences("monitor", Context.MODE_PRIVATE).edit()
                 .putLong("frames_total", 0)
@@ -400,6 +412,7 @@ public class MonitorService extends Service {
     public void onDestroy() {
         prefs.edit().putString("service_status", "остановлен").apply();
         if (executor != null) executor.shutdownNow();
+        if (directReader != null) directReader.stop();
         mainHandler.removeCallbacks(overlayTick);
         removeOverlay();
         super.onDestroy();
