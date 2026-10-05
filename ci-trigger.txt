@@ -1,1 +1,2 @@
-Trigger pull_request build for Peugeot307 CarInfo v0.4\nfloat overlay + system probe + decoded controls\n
+Trigger Peugeot307 CarInfo v0.4 final build
+floating overlay system probe direct CANBUS investigation
