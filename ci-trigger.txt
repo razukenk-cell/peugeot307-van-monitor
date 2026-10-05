@@ -1,2 +1,2 @@
-Trigger pull_request build for Peugeot307VanMonitor v0.2
-screen accessibility capture build
+Trigger pull_request build for Peugeot307 CarInfo v0.3
+visual door dashboard + telemetry candidates
