@@ -86,10 +86,17 @@ final class VehicleData {
         int minute = p.getInt("box_minute", -1);
 
         StringBuilder s = new StringBuilder();
-        s.append("Кандидат запаса хода: ");
-        s.append(range < 0 ? "—" : range + " км ?");
-        s.append("\nКандидат наружной t°: ");
-        s.append(outside < 0 || outside == 0xFF ? "—" : outside + " °C ?");
+
+        String directTemp = p.getString("direct_out_temp", "");
+        s.append("Наружная t° DIRECT: ");
+        s.append(directTemp == null || directTemp.isEmpty() ? "—" : directTemp);
+
+        s.append("\nЗапас хода RAW: ");
+        s.append(range < 0 ? "—" : range + " км (совпало с дисплеем)");
+
+        s.append("\nНаружная t° RAW: ");
+        s.append(outside < 0 || outside == 0xFF ? "—" : outside + " °C (совпало с дисплеем)");
+
         s.append("\nВремя CAN-box: ");
         if (hour >= 0 && minute >= 0) {
             s.append(String.format(Locale.US, "%02d:%02d", hour, minute));
@@ -108,7 +115,7 @@ final class VehicleData {
                     .append(" B4=").append(value(b4))
                     .append(" B8=").append(value(b8));
         }
-        s.append("\n? = ещё требует подтверждения, не считаем это окончательной расшифровкой.");
+        s.append("\nРасход/средняя скорость пока ещё не выведены напрямую.");
         return s.toString();
     }
 
