@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Peugeot 307 VAN Monitor</string>
+    <string name="accessibility_description">Считывает только отображаемые CANBUS/VAN коды 2E ... со штатного экрана магнитолы для диагностики Peugeot 307.</string>
 </resources>
