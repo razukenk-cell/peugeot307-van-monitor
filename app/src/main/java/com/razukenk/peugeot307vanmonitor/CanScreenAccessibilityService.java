@@ -29,7 +29,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                 scanActiveWindow();
             } catch (Throwable ignored) {
             }
-            handler.postDelayed(this, 250);
+            handler.postDelayed(this, 180);
         }
     };
 
@@ -44,15 +44,19 @@ public class CanScreenAccessibilityService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        if (prefs == null) {
-            prefs = getSharedPreferences("monitor", Context.MODE_PRIVATE);
-        }
+        if (prefs == null) prefs = getSharedPreferences("monitor", Context.MODE_PRIVATE);
 
         if (event.getPackageName() != null) {
-            prefs.edit().putString("screen_package", event.getPackageName().toString()).apply();
+            rememberExternalPackage(event.getPackageName().toString());
         }
-
         scanActiveWindow();
+    }
+
+    private void rememberExternalPackage(String packageName) {
+        if (packageName == null || packageName.isEmpty()) return;
+        if (packageName.equals(getPackageName())) return;
+        if (packageName.equals("com.android.systemui")) return;
+        prefs.edit().putString("screen_package", packageName).apply();
     }
 
     private void scanActiveWindow() {
@@ -62,11 +66,11 @@ public class CanScreenAccessibilityService extends AccessibilityService {
         CharSequence pkg = root.getPackageName();
         if (pkg != null) {
             String packageName = pkg.toString();
-            prefs.edit().putString("screen_package", packageName).apply();
             if (packageName.equals(getPackageName())) {
                 root.recycle();
                 return;
             }
+            rememberExternalPackage(packageName);
         }
 
         scanNode(root);
@@ -125,7 +129,8 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             if (previous == null || previous != state) {
                 lastKeyStates.put(keyId, state);
                 meaningful = true;
-                annotation = "SCREEN KEY id=" + hex(keyId) + " state=" + keyStateName(state);
+                annotation = "SCREEN KEY " + VehicleData.keyName(keyId) +
+                        " id=" + hex(keyId) + " state=" + keyStateName(state);
             }
         } else if (frame.command == 0x01) {
             String payload = frame.payloadHex();
@@ -134,6 +139,9 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                 meaningful = true;
                 annotation = "SCREEN VEHICLE_STATUS changed";
             }
+        } else if (frame.command == 0xC8) {
+            meaningful = true;
+            annotation = "SCREEN CLOCK";
         } else if (!frame.hex.equals(lastOtherFrame)) {
             lastOtherFrame = frame.hex;
             meaningful = true;
@@ -154,16 +162,17 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                 .putString("last_frame", frame.hex)
                 .putString("last_direction", "SCREEN")
                 .putString("last_command", hex(frame.command))
-                .putString("accessibility_status", "включён; живой экран опрашивается");
+                .putString("accessibility_status", "включён; CANBUS-экран читается");
 
         if (frame.command == 0x20 && frame.data.length >= 2) {
-            e.putString("last_key_id", hex(frame.unsigned(0)));
+            int keyId = frame.unsigned(0);
+            e.putString("last_key_id", hex(keyId));
+            e.putString("last_key_name", VehicleData.keyName(keyId));
             e.putString("last_key_state", keyStateName(frame.unsigned(1)));
         }
 
-        if (frame.command == 0x01) {
-            VehicleData.applyStatusFrame(prefs, e, frame);
-        }
+        if (frame.command == 0x01) VehicleData.applyStatusFrame(prefs, e, frame);
+        if (frame.command == 0xC8) VehicleData.applyClockFrame(e, frame);
 
         e.apply();
 
@@ -189,7 +198,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             File capture = new File(getFilesDir(), "capture.log");
             boolean append = capture.exists() && capture.length() < 2L * 1024L * 1024L;
             try (FileWriter w = new FileWriter(capture, append)) {
-                if (!append) w.write("# Peugeot 307 CarInfo capture v0.3\n");
+                if (!append) w.write("# Peugeot 307 CarInfo capture v0.4\n");
                 String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
                 w.write(ts + " " + text + "\n");
             }
@@ -199,17 +208,13 @@ public class CanScreenAccessibilityService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {
-        if (prefs != null) {
-            prefs.edit().putString("accessibility_status", "прерван системой").apply();
-        }
+        if (prefs != null) prefs.edit().putString("accessibility_status", "прерван системой").apply();
     }
 
     @Override
     public void onDestroy() {
         handler.removeCallbacks(pollRunnable);
-        if (prefs != null) {
-            prefs.edit().putString("accessibility_status", "выключен").apply();
-        }
+        if (prefs != null) prefs.edit().putString("accessibility_status", "выключен").apply();
         super.onDestroy();
     }
 }
