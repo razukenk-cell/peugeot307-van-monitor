@@ -1,2 +1,2 @@
-Trigger pull_request build for Peugeot307VanMonitor v0.1
-retry after SDK workflow fix
+Trigger pull_request build for Peugeot307VanMonitor v0.2
+screen accessibility capture build
