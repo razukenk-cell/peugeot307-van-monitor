@@ -596,3 +596,49 @@ APK:
 ## 24. Главное в одном абзаце
 
 У нас уже есть рабочий Android-проект, умеющий читать raw `2E...` debug frames, полностью расшифрованные двери/багажник и подрулевые кнопки. Был найден штатный `com.cartech.service.canbus`, его внутренний `CarData` API и exact CANBUS keys. v0.6 доказала, что `CarData` доступен стороннему APK, но использовала не тот getter для CANBUS properties. v0.7 исправляет это и напрямую опрашивает `state.canbus.door_state.i` и `state.canbus.out_temp.s`. Ближайший тест — двери без открытия штатного лога. Если direct работает, следующий этап — расход/БК/температуры через те же внутренние API.
+
+
+---
+
+## 25. Обновление после теста v0.7 / переход к v0.8
+
+Реальный тест v0.7 показал:
+
+- `CarData` действительно подключается;
+- `Exact API: true`;
+- `factory.canbus.current_canbus.s` читается и подтверждает `psa_01_sp / SimpleSoft / PeugeotCitroen`;
+- но чтение `state.canbus.door_state.i` падает с **InvocationTargetException**;
+- наружная температура direct тоже не получается;
+- при этом тот же момент двери идеально появляются в RAW потоке, когда открыт штатный CANBUS Debug Tool.
+
+Диагностический v0.7 содержит:
+- `Direct door state: (none)`
+- `Exact error: state.canbus.door_state.i: InvocationTargetException`
+- `Screen frames` работают и дают обычные `2E 01 0D ...`.
+
+После более глубокого анализа штатного `com.cartech.service.canbus` APK выяснено:
+
+- приложение установлено как system app и использует `sharedUserId=android.uid.system`;
+- raw UART находится в **/dev/ttyCanbus**;
+- штатный процесс сам владеет UART и читает его через `com.cartech.lib.serialport.Uart` / `libserial_port.so`;
+- `CanbusService.onBind()` не предоставляет удобный raw Binder API наружу;
+- DebugActivity экспортирована;
+- raw debug-feed включается внутри того же процесса через статического debug subscriber, когда DebugActivity включает **Capture**.
+
+Следствие: обычный sideloaded APK не может безопасно присоединиться к приватному static subscriber или получить system UID. Одновременное открытие `/dev/ttyCanbus` вторым reader-ом рискованно: два процесса могут конкурировать за одни и те же байты, из-за чего можно сломать штатные кнопки/декодирование.
+
+### v0.8 — AUTO CANBUS bridge
+
+Выбран no-root/read-only путь:
+
+1. CarInfo программно запускает экспортированную `com.cartech.service.canbus.activity.DebugActivity`.
+2. Accessibility Service получает список **всех окон** через `flagRetrieveInteractiveWindows`, а не только активное окно.
+3. CarInfo пытается автоматически найти элемент `Capture` в DebugActivity и нажать его.
+4. RAW строки `2E ...` читаются из Accessibility tree штатного окна.
+5. Поверх него создаётся полноэкранный `TYPE_ACCESSIBILITY_OVERLAY` с собственной графикой CarInfo.
+6. Пользователь видит только CarInfo, хотя штатный DebugActivity работает под ним как источник данных.
+7. Штатный процесс остаётся единственным владельцем `/dev/ttyCanbus`.
+
+Главная кнопка v0.8: **«АВТО CANBUS — ЗАПУСТИТЬ»**.
+
+Это пока не настоящее внедрение в процесс: это безопасный hidden bridge. Если в будущем будет root/platform signing, можно перейти к системному сервису или process injection.
