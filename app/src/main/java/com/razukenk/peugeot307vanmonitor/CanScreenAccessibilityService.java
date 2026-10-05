@@ -3,6 +3,8 @@ package com.razukenk.peugeot307vanmonitor;
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -20,11 +22,24 @@ public class CanScreenAccessibilityService extends AccessibilityService {
     private final Map<Integer, Integer> lastKeyStates = new HashMap<>();
     private String lastOtherFrame = "";
 
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable pollRunnable = new Runnable() {
+        @Override public void run() {
+            try {
+                scanActiveWindow();
+            } catch (Throwable ignored) {
+            }
+            handler.postDelayed(this, 250);
+        }
+    };
+
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
         prefs = getSharedPreferences("monitor", Context.MODE_PRIVATE);
         prefs.edit().putString("accessibility_status", "включён").apply();
+        handler.removeCallbacks(pollRunnable);
+        handler.post(pollRunnable);
     }
 
     @Override
@@ -37,8 +52,23 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             prefs.edit().putString("screen_package", event.getPackageName().toString()).apply();
         }
 
+        scanActiveWindow();
+    }
+
+    private void scanActiveWindow() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
+
+        CharSequence pkg = root.getPackageName();
+        if (pkg != null) {
+            String packageName = pkg.toString();
+            prefs.edit().putString("screen_package", packageName).apply();
+            if (packageName.equals(getPackageName())) {
+                root.recycle();
+                return;
+            }
+        }
+
         scanNode(root);
         root.recycle();
     }
@@ -70,7 +100,6 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             if (frame != null) recordFrame(frame);
         }
 
-        // Some apps expose a whole console as one long accessibility string.
         if (lines.length == 1) {
             int cursor = 0;
             while (cursor < block.length()) {
@@ -125,7 +154,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                 .putString("last_frame", frame.hex)
                 .putString("last_direction", "SCREEN")
                 .putString("last_command", hex(frame.command))
-                .putString("accessibility_status", "включён, пакеты читаются");
+                .putString("accessibility_status", "включён; живой экран опрашивается");
 
         if (frame.command == 0x20 && frame.data.length >= 2) {
             e.putString("last_key_id", hex(frame.unsigned(0)));
@@ -133,14 +162,13 @@ public class CanScreenAccessibilityService extends AccessibilityService {
         }
 
         if (frame.command == 0x01) {
-            e.putString("vehicle_payload", frame.payloadHex());
-            if (frame.data.length > 10) {
-                e.putString("vehicle_mask", hex(frame.unsigned(10)));
-            }
+            VehicleData.applyStatusFrame(prefs, e, frame);
         }
+
         e.apply();
 
-        appendCapture(annotation + " | SCREEN " + frame.hex + " | checksum=" + (frame.checksumOk ? "OK" : "BAD"));
+        appendCapture(annotation + " | SCREEN " + frame.hex +
+                " | checksum=" + (frame.checksumOk ? "OK" : "BAD"));
     }
 
     private String keyStateName(int state) {
@@ -161,7 +189,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             File capture = new File(getFilesDir(), "capture.log");
             boolean append = capture.exists() && capture.length() < 2L * 1024L * 1024L;
             try (FileWriter w = new FileWriter(capture, append)) {
-                if (!append) w.write("# Peugeot 307 VAN Monitor capture v0.2\n");
+                if (!append) w.write("# Peugeot 307 CarInfo capture v0.3\n");
                 String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
                 w.write(ts + " " + text + "\n");
             }
@@ -178,6 +206,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
 
     @Override
     public void onDestroy() {
+        handler.removeCallbacks(pollRunnable);
         if (prefs != null) {
             prefs.edit().putString("accessibility_status", "выключен").apply();
         }
