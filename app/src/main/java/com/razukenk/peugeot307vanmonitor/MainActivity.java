@@ -31,6 +31,7 @@ public class MainActivity extends Activity {
 
     private SharedPreferences prefs;
     private final Handler handler = new Handler();
+    private TextView accessibility;
     private TextView status;
     private TextView source;
     private TextView counters;
@@ -64,51 +65,68 @@ public class MainActivity extends Activity {
         root.setPadding(24, 18, 24, 24);
         scroll.addView(root);
 
-        TextView title = text("PEUGEOT 307 VAN MONITOR  v0.1", 24, Color.WHITE);
+        TextView title = text("PEUGEOT 307 VAN MONITOR  v0.2", 24, Color.WHITE);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
 
         TextView subtitle = text(
-                "Диагностическая версия для RK3566 / CTC01_P01 / SimpleSoft psa_01_sp\n" +
-                "Читает .txt-лог штатного CANBUS и фиксирует изменения пакетов 2E ...",
+                "Теперь умеет перехватывать коды 2E ... прямо с экрана штатного CANBUS-приложения.\n" +
+                "Сохранение штатного .txt лога больше не обязательно.",
                 15, Color.LTGRAY);
         subtitle.setPadding(0, 8, 0, 16);
         root.addView(subtitle);
 
-        status = section(root, "Сервис");
-        source = section(root, "Источник CANBUS");
+        accessibility = section(root, "Перехват экрана CANBUS");
+        status = section(root, "Фоновый сервис");
+        source = section(root, "Дополнительный источник .txt (необязательно)");
         counters = section(root, "Статистика");
         carState = section(root, "Кандидат состояния автомобиля");
         keyState = section(root, "Подрулевые кнопки");
         lastFrame = section(root, "Последний пакет");
 
+        root.addView(button("1. ВКЛЮЧИТЬ ПЕРЕХВАТ CANBUS С ЭКРАНА", v -> {
+            try {
+                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                Toast.makeText(this,
+                        "Найдите Peugeot 307 CANBUS screen reader и включите его",
+                        Toast.LENGTH_LONG).show();
+            } catch (Exception e) {
+                Toast.makeText(this, "Не удалось открыть специальные возможности", Toast.LENGTH_LONG).show();
+            }
+        }));
+
+        root.addView(button("2. ОЧИСТИТЬ ЗАПИСЬ ПЕРЕД ТЕСТОМ", v -> {
+            MonitorService.clearCapture(this);
+            prefs.edit().putLong("screen_frames", 0).apply();
+            Toast.makeText(this, "Запись очищена. Теперь откройте штатный экран CANBUS.", Toast.LENGTH_SHORT).show();
+        }));
+
+        root.addView(button("3. ЭКСПОРТИРОВАТЬ ДИАГНОСТИКУ", v -> exportDiagnostics()));
+
         autostart = new CheckBox(this);
-        autostart.setText("Автозапуск после включения магнитолы");
+        autostart.setText("Также запускать обычный фоновый монитор после загрузки Android");
         autostart.setTextColor(Color.WHITE);
-        autostart.setTextSize(16);
+        autostart.setTextSize(15);
         autostart.setChecked(prefs.getBoolean("autostart_enabled", false));
         autostart.setOnCheckedChangeListener((buttonView, isChecked) ->
                 prefs.edit().putBoolean("autostart_enabled", isChecked).apply());
         root.addView(autostart);
 
-        root.addView(button("1. ВЫБРАТЬ ПАПКУ С CANBUS .TXT ЛОГАМИ", v -> chooseFolder()));
-        root.addView(button("2. ЗАПУСТИТЬ ФОНОВЫЙ МОНИТОР", v -> startMonitor()));
-        root.addView(button("ОСТАНОВИТЬ МОНИТОР", v -> stopMonitor()));
-        root.addView(button("ОЧИСТИТЬ ЗАПИСЬ ПЕРЕД ТЕСТОМ", v -> {
-            MonitorService.clearCapture(this);
-            Toast.makeText(this, "Запись очищена. Можно начинать тест.", Toast.LENGTH_SHORT).show();
-        }));
-        root.addView(button("ЭКСПОРТИРОВАТЬ ДИАГНОСТИКУ", v -> exportDiagnostics()));
+        root.addView(button("Выбрать папку с сохранёнными .txt логами (необязательно)", v -> chooseFolder()));
+        root.addView(button("Запустить обычный фоновый монитор .txt", v -> startMonitor()));
+        root.addView(button("Остановить обычный монитор .txt", v -> stopMonitor()));
 
         TextView help = text(
-                "\nКАК ПРОВЕСТИ ТЕСТ:\n" +
-                "• В штатном CANBUS-экране магнитолы включите запись лога, если она включается вручную.\n" +
-                "• Нажмите «Очистить запись перед тестом».\n" +
-                "• 5 сек ничего → водительская дверь → закрыть → пассажирская дверь → закрыть.\n" +
-                "• Volume+ → Volume− → кнопка БК на стрекозе.\n" +
-                "• Нажмите «Экспортировать диагностику».\n" +
-                "Файл появится в Downloads/Peugeot307VanMonitor — пришлите его в чат.\n\n" +
-                "Важно: v0.1 ничего не отправляет в VAN/CAN и не управляет машиной. Она только читает уже созданный штатной магнитолой лог.",
+                "\nКАК ТЕСТИРОВАТЬ v0.2:\n" +
+                "1) Нажмите «Включить перехват CANBUS с экрана».\n" +
+                "2) В специальных возможностях включите «Peugeot 307 CANBUS screen reader».\n" +
+                "3) Вернитесь сюда и нажмите «Очистить запись перед тестом».\n" +
+                "4) Откройте штатное CANBUS-приложение магнитолы, где вживую бегут коды 2E ...\n" +
+                "5) Оставьте этот экран открытым во время всего теста. Наша служба работает поверх него в фоне.\n" +
+                "6) 5 сек ничего → водительская дверь → закрыть → пассажирская → закрыть → Volume+ → Volume− → кнопка БК.\n" +
+                "7) Вернитесь в Peugeot 307 VAN Monitor и нажмите «Экспортировать диагностику».\n\n" +
+                "Если счётчик «SCREEN» растёт — прямой перехват работает.\n" +
+                "Служба анализирует только текст, содержащий CANBUS-кадры 2E ...; остальной текст экрана в диагностический файл не сохраняется.",
                 14, Color.LTGRAY);
         root.addView(help);
 
@@ -168,7 +186,7 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
             prefs.edit().putString("log_tree_uri", uri.toString()).apply();
-            Toast.makeText(this, "Папка CANBUS-логов сохранена", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Папка логов сохранена", Toast.LENGTH_SHORT).show();
             startMonitor();
         }
     }
@@ -191,9 +209,9 @@ public class MainActivity extends Activity {
 
     private void exportDiagnostics() {
         try {
-            Uri out = DiagnosticsExporter.export(this);
+            DiagnosticsExporter.export(this);
             Toast.makeText(this,
-                    "Готово. Файл сохранён в Downloads/Peugeot307VanMonitor",
+                    "Готово: Downloads/Peugeot307VanMonitor",
                     Toast.LENGTH_LONG).show();
         } catch (Exception e) {
             Toast.makeText(this, "Ошибка экспорта: " + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -201,7 +219,11 @@ public class MainActivity extends Activity {
     }
 
     private void updateUi() {
-        String s = prefs.getString("service_status", "остановлен");
+        accessibility.setText(
+                prefs.getString("accessibility_status", "ещё не включён") +
+                "\nПоследний пакет приложения: " + prefs.getString("screen_package", "—"));
+
+        String s = prefs.getString("service_status", "обычный .txt монитор остановлен");
         long lastActivity = prefs.getLong("last_activity_ms", 0);
         String activity = lastActivity == 0 ? "нет пакетов" :
                 DateFormat.getTimeInstance(DateFormat.MEDIUM).format(new Date(lastActivity));
@@ -209,12 +231,13 @@ public class MainActivity extends Activity {
 
         String tree = prefs.getString("log_tree_uri", "");
         String file = prefs.getString("current_file", "");
-        source.setText((tree == null || tree.isEmpty() ? "Папка не выбрана" : tree) +
-                (file == null || file.isEmpty() ? "" : "\nТекущий файл: " + file));
+        source.setText((tree == null || tree.isEmpty() ? "не используется" : tree) +
+                (file == null || file.isEmpty() ? "" : "\nФайл: " + file));
 
         counters.setText(String.format(Locale.US,
-                "Пакетов: %d   checksum BAD: %d",
+                "Изменений/событий: %d   SCREEN: %d   checksum BAD: %d",
                 prefs.getLong("frames_total", 0),
+                prefs.getLong("screen_frames", 0),
                 prefs.getLong("frames_bad", 0)));
 
         carState.setText("mask candidate: " + prefs.getString("vehicle_mask", "—") +
