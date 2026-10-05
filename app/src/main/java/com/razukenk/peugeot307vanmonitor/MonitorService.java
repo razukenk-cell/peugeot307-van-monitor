@@ -19,7 +19,6 @@ import java.io.FileWriter;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.text.SimpleDateFormat;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.Executors;
@@ -44,11 +43,11 @@ public class MonitorService extends Service {
         super.onCreate();
         prefs = getSharedPreferences("monitor", Context.MODE_PRIVATE);
         createNotificationChannel();
-        startForeground(NOTIFICATION_ID, buildNotification("Ожидание папки CANBUS-логов"));
+        startForeground(NOTIFICATION_ID, buildNotification("Peugeot 307: монитор CANBUS запущен"));
         prefs.edit().putString("service_status", "работает").apply();
 
         executor = Executors.newSingleThreadScheduledExecutor();
-        executor.scheduleWithFixedDelay(this::pollSafely, 0, 1200, TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(this::pollSafely, 0, 650, TimeUnit.MILLISECONDS);
     }
 
     @Override
@@ -64,7 +63,9 @@ public class MonitorService extends Service {
         try {
             poll();
         } catch (Throwable t) {
-            prefs.edit().putString("service_status", "ошибка: " + t.getClass().getSimpleName() + ": " + safeMessage(t)).apply();
+            prefs.edit()
+                    .putString("service_status", "ошибка: " + t.getClass().getSimpleName() + ": " + safeMessage(t))
+                    .apply();
         }
     }
 
@@ -76,7 +77,7 @@ public class MonitorService extends Service {
     private void poll() throws Exception {
         String tree = prefs.getString("log_tree_uri", "");
         if (tree == null || tree.isEmpty()) {
-            prefs.edit().putString("service_status", "работает, папка логов не выбрана").apply();
+            prefs.edit().putString("service_status", "работает; папка логов не выбрана").apply();
             return;
         }
 
@@ -101,7 +102,7 @@ public class MonitorService extends Service {
         }
 
         if (newest == null) {
-            prefs.edit().putString("service_status", "работает, .txt логов в папке пока нет").apply();
+            prefs.edit().putString("service_status", "работает; ждёт .txt от штатного CANBUS").apply();
             return;
         }
 
@@ -115,10 +116,12 @@ public class MonitorService extends Service {
         int newFrames = 0;
         try (InputStream in = getContentResolver().openInputStream(newest.getUri());
              BufferedReader br = new BufferedReader(new InputStreamReader(in))) {
+            if (in == null) throw new IllegalStateException("openInputStream returned null");
             String line;
             while ((line = br.readLine()) != null) {
                 lineNo++;
                 if (lineNo <= processedLines) continue;
+
                 FrameParser.Frame frame = FrameParser.parseLine(line);
                 if (frame != null) {
                     handleFrame(frame);
@@ -126,11 +129,17 @@ public class MonitorService extends Service {
                 }
             }
         }
-        processedLines = lineNo;
+
+        // If the stock logger truncated/restarted the same file, start from its new beginning next pass.
+        if (lineNo < processedLines) {
+            processedLines = 0;
+        } else {
+            processedLines = lineNo;
+        }
 
         SharedPreferences.Editor e = prefs.edit()
                 .putString("current_file", newest.getName() == null ? newestUri : newest.getName())
-                .putString("service_status", "работает, слежение активно");
+                .putString("service_status", "работает; читает штатный лог");
         if (newFrames > 0) e.putLong("last_activity_ms", System.currentTimeMillis());
         e.apply();
     }
@@ -154,16 +163,15 @@ public class MonitorService extends Service {
             int state = frame.unsigned(1);
             e.putString("last_key_id", String.format(Locale.US, "0x%02X", keyId));
             e.putString("last_key_state", keyStateName(state));
-            annotation = "KEY id=" + String.format(Locale.US, "0x%02X", keyId) + " state=" + keyStateName(state);
+            annotation = "KEY id=" + String.format(Locale.US, "0x%02X", keyId) +
+                    " state=" + keyStateName(state);
             capture = true;
         } else if (frame.command == 0x01) {
             String payload = frame.payloadHex();
-            e.putString("vehicle_payload", payload);
-            if (frame.data.length > 10) {
-                e.putString("vehicle_mask", String.format(Locale.US, "0x%02X", frame.unsigned(10)));
-            }
+            VehicleData.applyStatusFrame(prefs, e, frame);
             if (!payload.equals(lastVehiclePayload)) {
-                annotation = "VEHICLE_STATUS changed";
+                annotation = "VEHICLE_STATUS changed doors=" +
+                        String.format(Locale.US, "0x%02X", frame.data.length > 10 ? frame.unsigned(10) : 0);
                 capture = true;
                 lastVehiclePayload = payload;
             }
@@ -175,7 +183,8 @@ public class MonitorService extends Service {
         e.apply();
 
         if (capture) {
-            appendCapture(annotation + " | " + frame.direction + " " + frame.hex + " | checksum=" + (frame.checksumOk ? "OK" : "BAD"));
+            appendCapture(annotation + " | " + frame.direction + " " + frame.hex +
+                    " | checksum=" + (frame.checksumOk ? "OK" : "BAD"));
         }
     }
 
@@ -193,9 +202,7 @@ public class MonitorService extends Service {
             File capture = new File(getFilesDir(), "capture.log");
             boolean append = capture.exists() && capture.length() < MAX_CAPTURE_BYTES;
             try (FileWriter w = new FileWriter(capture, append)) {
-                if (!append) {
-                    w.write("# Peugeot 307 VAN Monitor capture\n");
-                }
+                if (!append) w.write("# Peugeot 307 CarInfo capture v0.3\n");
                 String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
                 w.write(ts + " " + text + "\n");
             }
@@ -206,16 +213,21 @@ public class MonitorService extends Service {
     static void clearCapture(Context context) {
         File capture = new File(context.getFilesDir(), "capture.log");
         if (capture.exists()) capture.delete();
-        context.getSharedPreferences("monitor", Context.MODE_PRIVATE).edit()
+
+        SharedPreferences.Editor e = context.getSharedPreferences("monitor", Context.MODE_PRIVATE).edit()
                 .putLong("frames_total", 0)
                 .putLong("frames_bad", 0)
+                .putLong("screen_frames", 0)
                 .remove("last_frame")
                 .remove("last_command")
                 .remove("last_key_id")
                 .remove("last_key_state")
                 .remove("vehicle_mask")
                 .remove("vehicle_payload")
-                .apply();
+                .remove("telemetry_last_ms");
+
+        for (int i = 0; i < 13; i++) e.remove("status_b" + i);
+        e.apply();
     }
 
     private void createNotificationChannel() {
@@ -223,10 +235,10 @@ public class MonitorService extends Service {
             NotificationManager nm = getSystemService(NotificationManager.class);
             NotificationChannel ch = new NotificationChannel(
                     CHANNEL_ID,
-                    "Peugeot 307 VAN Monitor",
+                    "Peugeot 307 CarInfo",
                     NotificationManager.IMPORTANCE_LOW
             );
-            ch.setDescription("Фоновое чтение CANBUS/VAN логов");
+            ch.setDescription("Фоновое чтение данных SimpleSoft/RP5");
             nm.createNotificationChannel(ch);
         }
     }
@@ -242,7 +254,7 @@ public class MonitorService extends Service {
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
 
-        return b.setContentTitle("Peugeot 307 VAN Monitor")
+        return b.setContentTitle("Peugeot 307 CarInfo")
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.ic_menu_info_details)
                 .setContentIntent(pi)
