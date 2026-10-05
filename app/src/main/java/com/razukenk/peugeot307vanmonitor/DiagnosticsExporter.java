@@ -23,10 +23,10 @@ final class DiagnosticsExporter {
     static Uri export(Context context) throws Exception {
         SharedPreferences p = context.getSharedPreferences("monitor", Context.MODE_PRIVATE);
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String filename = "peugeot307_diagnostic_v03_" + stamp + ".txt";
+        String filename = "peugeot307_diagnostic_v04_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 CarInfo diagnostic v0.3\n");
+        report.append("Peugeot 307 CarInfo diagnostic v0.4\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
