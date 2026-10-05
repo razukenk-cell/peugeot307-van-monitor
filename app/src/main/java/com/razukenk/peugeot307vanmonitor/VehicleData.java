@@ -18,17 +18,37 @@ final class VehicleData {
         e.putInt("door_mask", mask);
         e.putString("vehicle_mask", String.format(Locale.US, "0x%02X", mask));
         e.putString("vehicle_payload", frame.payloadHex());
+        e.putString("doors_text", doorsText(mask));
 
-        // Keep the last complete "awake/engine-on" status sample.
-        // In the observed RP5 stream byte 8 becomes 0xFF when the richer telemetry disappears.
+        // Always retain the current status bytes for correlation.
+        for (int i = 0; i < frame.data.length; i++) {
+            e.putInt("current_status_b" + i, frame.unsigned(i));
+        }
+
+        // Strong candidates discovered from the user's synchronized photo/log test.
+        int rangeCandidate = (frame.unsigned(1) << 8) | frame.unsigned(2);
+        int outsideCandidate = frame.unsigned(9);
+        e.putInt("range_candidate", rangeCandidate);
+        e.putInt("outside_candidate", outsideCandidate);
+
+        // Preserve richer samples separately when the box provides them.
         if (frame.unsigned(8) != 0xFF) {
             e.putLong("telemetry_last_ms", System.currentTimeMillis());
             for (int i = 0; i < frame.data.length; i++) {
                 e.putInt("status_b" + i, frame.unsigned(i));
             }
         }
+    }
 
-        e.putString("doors_text", doorsText(mask));
+    static void applyClockFrame(SharedPreferences.Editor e, FrameParser.Frame frame) {
+        if (frame.command != 0xC8 || frame.data.length < 4) return;
+        int hour = frame.unsigned(2);
+        int minute = frame.unsigned(3);
+        if (hour <= 23 && minute <= 59) {
+            e.putInt("box_hour", hour);
+            e.putInt("box_minute", minute);
+            e.putLong("box_clock_ms", System.currentTimeMillis());
+        }
     }
 
     static String doorsText(int mask) {
@@ -47,28 +67,55 @@ final class VehicleData {
         s.append(name);
     }
 
+    static String keyName(int id) {
+        switch (id & 0xFF) {
+            case 0x01: return "Громкость +";
+            case 0x02: return "Громкость −";
+            case 0x05: return "SOURCE";
+            case 0x06: return "Колесико вверх";
+            case 0x07: return "Колесико вниз";
+            case 0x80: return "Кнопка БК";
+            default: return String.format(Locale.US, "Неизвестная 0x%02X", id & 0xFF);
+        }
+    }
+
     static String telemetrySummary(SharedPreferences p) {
-        long ts = p.getLong("telemetry_last_ms", 0);
-        if (ts == 0) {
-            return "Телеметрия пока не распознана.\nНужен живой статус RP5 при включённом зажигании.";
+        int range = p.getInt("range_candidate", -1);
+        int outside = p.getInt("outside_candidate", -1);
+        int hour = p.getInt("box_hour", -1);
+        int minute = p.getInt("box_minute", -1);
+
+        StringBuilder s = new StringBuilder();
+        s.append("Кандидат запаса хода: ");
+        s.append(range < 0 ? "—" : range + " км ?");
+        s.append("\nКандидат наружной t°: ");
+        s.append(outside < 0 || outside == 0xFF ? "—" : outside + " °C ?");
+        s.append("\nВремя CAN-box: ");
+        if (hour >= 0 && minute >= 0) {
+            s.append(String.format(Locale.US, "%02d:%02d", hour, minute));
+        } else {
+            s.append("—");
         }
 
-        int b0 = p.getInt("status_b0", -1);
-        int b3 = p.getInt("status_b3", -1);
-        int b4 = p.getInt("status_b4", -1);
-        int b8 = p.getInt("status_b8", -1);
-
-        return "Сырые кандидаты RP5:\n" +
-                "B0 = " + value(b0) + "   B3 = " + value(b3) + "\n" +
-                "B4 = " + value(b4) + "   B8 = " + value(b8) + "\n" +
-                "B8 в вашем тесте был 89 — похож на температурный параметр, но пока НЕ подписываем его как °C.\n" +
-                "Расход / наружная t° / топливо / запас хода: ждут расшифровки.";
+        long rich = p.getLong("telemetry_last_ms", 0);
+        if (rich > 0) {
+            int b0 = p.getInt("status_b0", -1);
+            int b3 = p.getInt("status_b3", -1);
+            int b4 = p.getInt("status_b4", -1);
+            int b8 = p.getInt("status_b8", -1);
+            s.append("\nRich: B0=").append(value(b0))
+                    .append(" B3=").append(value(b3))
+                    .append(" B4=").append(value(b4))
+                    .append(" B8=").append(value(b8));
+        }
+        s.append("\n? = ещё требует подтверждения, не считаем это окончательной расшифровкой.");
+        return s.toString();
     }
 
     static String rawStatusBytes(SharedPreferences p) {
         StringBuilder s = new StringBuilder();
         for (int i = 0; i < 13; i++) {
-            int v = p.getInt("status_b" + i, -1);
+            int v = p.getInt("current_status_b" + i, -1);
             if (i > 0) s.append(' ');
             s.append(v < 0 ? "--" : String.format(Locale.US, "%02X", v));
         }
@@ -76,7 +123,7 @@ final class VehicleData {
     }
 
     private static String value(int v) {
-        return v < 0 ? "—" : String.format(Locale.US, "%d (0x%02X)", v, v);
+        return v < 0 ? "—" : String.format(Locale.US, "%d(0x%02X)", v, v);
     }
 
     private VehicleData() {}
