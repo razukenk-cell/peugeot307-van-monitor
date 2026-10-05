@@ -23,10 +23,10 @@ final class DiagnosticsExporter {
     static Uri export(Context context) throws Exception {
         SharedPreferences p = context.getSharedPreferences("monitor", Context.MODE_PRIVATE);
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String filename = "peugeot307_diagnostic_" + stamp + ".txt";
+        String filename = "peugeot307_diagnostic_v03_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 VAN Monitor diagnostic v0.2\n");
+        report.append("Peugeot 307 CarInfo diagnostic v0.3\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
@@ -35,12 +35,25 @@ final class DiagnosticsExporter {
         report.append("Model: ").append(Build.MODEL).append("\n");
         report.append("Device: ").append(Build.DEVICE).append("\n");
         report.append("Product: ").append(Build.PRODUCT).append("\n");
-        report.append("Android: ").append(Build.VERSION.RELEASE).append(" (SDK ").append(Build.VERSION.SDK_INT).append(")\n");
+        report.append("Android: ").append(Build.VERSION.RELEASE)
+                .append(" (SDK ").append(Build.VERSION.SDK_INT).append(")\n");
         report.append("Fingerprint: ").append(Build.FINGERPRINT).append("\n\n");
+
+        int mask = p.getInt("door_mask", 0);
+        report.append("[VEHICLE]\n");
+        report.append(String.format(Locale.US, "Door mask: 0x%02X\n", mask));
+        report.append("Doors: ").append(VehicleData.doorsText(mask)).append("\n");
+        report.append("Vehicle payload: ").append(p.getString("vehicle_payload", "(none)")).append("\n");
+        report.append("Last rich status bytes: ").append(VehicleData.rawStatusBytes(p)).append("\n");
+        report.append("Telemetry candidate timestamp: ").append(p.getLong("telemetry_last_ms", 0)).append("\n");
+        report.append("B0: ").append(p.getInt("status_b0", -1)).append("\n");
+        report.append("B3: ").append(p.getInt("status_b3", -1)).append("\n");
+        report.append("B4: ").append(p.getInt("status_b4", -1)).append("\n");
+        report.append("B8: ").append(p.getInt("status_b8", -1)).append("\n\n");
 
         report.append("[MONITOR]\n");
         report.append("Service: ").append(p.getString("service_status", "unknown")).append("\n");
-        report.append("Accessibility capture: ").append(p.getString("accessibility_status", "unknown")).append("\n");
+        report.append("Accessibility: ").append(p.getString("accessibility_status", "unknown")).append("\n");
         report.append("Last source package: ").append(p.getString("screen_package", "(none)")).append("\n");
         report.append("Source folder: ").append(p.getString("log_tree_uri", "(not selected)")).append("\n");
         report.append("Current file: ").append(p.getString("current_file", "(none)")).append("\n");
@@ -51,18 +64,14 @@ final class DiagnosticsExporter {
         report.append("Last direction: ").append(p.getString("last_direction", "(none)")).append("\n");
         report.append("Last command: ").append(p.getString("last_command", "(none)")).append("\n");
         report.append("Last key id: ").append(p.getString("last_key_id", "(none)")).append("\n");
-        report.append("Last key state: ").append(p.getString("last_key_state", "(none)")).append("\n");
-        report.append("Vehicle mask candidate: ").append(p.getString("vehicle_mask", "(none)")).append("\n");
-        report.append("Vehicle payload: ").append(p.getString("vehicle_payload", "(none)")).append("\n\n");
+        report.append("Last key state: ").append(p.getString("last_key_state", "(none)")).append("\n\n");
 
         report.append("[CAPTURE - CHANGED/EVENT FRAMES]\n");
         File capture = new File(context.getFilesDir(), "capture.log");
         if (capture.exists()) {
             try (BufferedReader br = new BufferedReader(new FileReader(capture))) {
                 String line;
-                while ((line = br.readLine()) != null) {
-                    report.append(line).append('\n');
-                }
+                while ((line = br.readLine()) != null) report.append(line).append('\n');
             }
         } else {
             report.append("(empty)\n");
@@ -74,7 +83,8 @@ final class DiagnosticsExporter {
             ContentValues values = new ContentValues();
             values.put(MediaStore.Downloads.DISPLAY_NAME, filename);
             values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
-            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Peugeot307VanMonitor");
+            values.put(MediaStore.Downloads.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/Peugeot307VanMonitor");
             ContentResolver resolver = context.getContentResolver();
             Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
             if (uri == null) throw new IllegalStateException("Cannot create Downloads file");
@@ -85,7 +95,8 @@ final class DiagnosticsExporter {
             return uri;
         }
 
-        File dir = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "Peugeot307VanMonitor");
+        File dir = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS),
+                "Peugeot307VanMonitor");
         if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Cannot create export directory");
         File outFile = new File(dir, filename);
         try (FileOutputStream out = new FileOutputStream(outFile)) {
