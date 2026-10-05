@@ -23,10 +23,10 @@ final class DiagnosticsExporter {
     static Uri export(Context context) throws Exception {
         SharedPreferences p = context.getSharedPreferences("monitor", Context.MODE_PRIVATE);
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String filename = "peugeot307_diagnostic_v07_" + stamp + ".txt";
+        String filename = "peugeot307_diagnostic_v08_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 CarInfo diagnostic v0.7\n");
+        report.append("Peugeot 307 CarInfo diagnostic v0.8\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
@@ -50,6 +50,15 @@ final class DiagnosticsExporter {
         report.append("B3: ").append(p.getInt("status_b3", -1)).append("\n");
         report.append("B4: ").append(p.getInt("status_b4", -1)).append("\n");
         report.append("B8: ").append(p.getInt("status_b8", -1)).append("\n\n");
+
+        report.append("[AUTO CANBUS BRIDGE]\n");
+        report.append("Enabled: ").append(p.getBoolean("bridge_enabled", false)).append("\n");
+        report.append("Status: ").append(p.getString("bridge_status", "(none)")).append("\n");
+        report.append("Capture: ").append(p.getString("bridge_capture_status", "(none)")).append("\n");
+        report.append("Last stock window ms: ").append(p.getLong("bridge_stock_window_ms", 0)).append("\n");
+        report.append("Last raw frame ms: ").append(p.getLong("bridge_last_frame_ms", 0)).append("\n");
+        report.append("Bridge error: ").append(p.getString("bridge_error", "(none)")).append("\n");
+        report.append("Accessibility overlay error: ").append(p.getString("accessibility_overlay_error", "(none)")).append("\n\n");
 
         report.append("[DIRECT CarData]\n");
         report.append("Status: ").append(p.getString("direct_status", "unknown")).append("\n");
