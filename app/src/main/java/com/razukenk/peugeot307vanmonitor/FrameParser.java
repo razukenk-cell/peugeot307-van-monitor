@@ -37,25 +37,38 @@ final class FrameParser {
     static Frame parseLine(String line) {
         if (line == null) return null;
         String trimmed = line.trim();
-        String direction;
-        int arrow;
+        String direction = "SCREEN";
+        int start = -1;
 
-        if ((arrow = trimmed.indexOf("--->")) >= 0) {
+        int arrow = trimmed.indexOf("--->");
+        if (arrow >= 0) {
             direction = "--->";
-        } else if ((arrow = trimmed.indexOf("<---")) >= 0) {
-            direction = "<---";
+            start = arrow + 4;
         } else {
-            return null;
+            arrow = trimmed.indexOf("<---");
+            if (arrow >= 0) {
+                direction = "<---";
+                start = arrow + 4;
+            }
         }
 
-        String hexPart = trimmed.substring(arrow + 4).trim();
-        if (hexPart.isEmpty()) return null;
+        if (start < 0) {
+            String upper = trimmed.toUpperCase(Locale.US);
+            start = upper.indexOf("2E ");
+            if (start < 0 && upper.equals("2E")) start = 0;
+            if (start < 0) return null;
+        }
 
+        String hexPart = trimmed.substring(start).trim();
         String[] pieces = hexPart.split("\\s+");
         List<Integer> bytes = new ArrayList<>();
         for (String piece : pieces) {
-            if (!piece.matches("(?i)[0-9a-f]{2}")) break;
-            bytes.add(Integer.parseInt(piece, 16));
+            String clean = piece.replaceAll("^[^0-9A-Fa-f]+|[^0-9A-Fa-f]+$", "");
+            if (!clean.matches("(?i)[0-9a-f]{2}")) {
+                if (bytes.isEmpty()) continue;
+                break;
+            }
+            bytes.add(Integer.parseInt(clean, 16));
         }
 
         if (bytes.size() < 4 || bytes.get(0) != 0x2E) return null;
