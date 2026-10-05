@@ -2,6 +2,7 @@ package com.razukenk.peugeot307vanmonitor;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
@@ -12,6 +13,8 @@ import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -20,29 +23,47 @@ import java.io.FileWriter;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 public class CanScreenAccessibilityService extends AccessibilityService {
+    private static final long AUTO_CAPTURE_DELAY_MS = 1300;
+    private static final long RELAUNCH_DELAY_MS = 4500;
+
     private SharedPreferences prefs;
     private String lastVehiclePayload = "";
     private final Map<Integer, Integer> lastKeyStates = new HashMap<>();
     private String lastOtherFrame = "";
 
+    private long lastFrameSeenMs = 0;
+    private long lastStockWindowSeenMs = 0;
+    private long lastBridgeLaunchAttemptMs = 0;
+    private long lastCaptureAttemptMs = 0;
+
     private WindowManager windowManager;
     private View overlayView;
     private CarDoorView overlayCar;
-    private TextView overlayText;
+    private TextView overlayStatus;
+    private TextView overlayDoors;
+    private TextView overlayData;
+    private TextView overlayKey;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable pollRunnable = new Runnable() {
         @Override public void run() {
             try {
-                scanActiveWindow();
-                updateAccessibilityOverlay();
-            } catch (Throwable ignored) {
+                scanCanbusWindows();
+                maintainBridge();
+                updateBridgeOverlay();
+            } catch (Throwable t) {
+                if (prefs != null) {
+                    prefs.edit().putString("bridge_error",
+                            t.getClass().getSimpleName() + ": " +
+                                    (t.getMessage() == null ? "" : t.getMessage())).apply();
+                }
             }
-            handler.postDelayed(this, 180);
+            handler.postDelayed(this, 120);
         }
     };
 
@@ -61,11 +82,10 @@ public class CanScreenAccessibilityService extends AccessibilityService {
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (prefs == null) prefs = getSharedPreferences("monitor", Context.MODE_PRIVATE);
-
         if (event.getPackageName() != null) {
             rememberExternalPackage(event.getPackageName().toString());
         }
-        scanActiveWindow();
+        scanCanbusWindows();
     }
 
     private void rememberExternalPackage(String packageName) {
@@ -75,22 +95,71 @@ public class CanScreenAccessibilityService extends AccessibilityService {
         prefs.edit().putString("screen_package", packageName).apply();
     }
 
-    private void scanActiveWindow() {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return;
+    private void scanCanbusWindows() {
+        boolean stockFound = false;
 
-        CharSequence pkg = root.getPackageName();
-        if (pkg != null) {
-            String packageName = pkg.toString();
-            if (packageName.equals(getPackageName())) {
-                root.recycle();
-                return;
+        try {
+            List<AccessibilityWindowInfo> windows = getWindows();
+            if (windows != null) {
+                for (AccessibilityWindowInfo window : windows) {
+                    AccessibilityNodeInfo root = null;
+                    try {
+                        root = window.getRoot();
+                        if (root == null) continue;
+                        CharSequence pkg = root.getPackageName();
+                        if (pkg == null) continue;
+
+                        String packageName = pkg.toString();
+                        rememberExternalPackage(packageName);
+
+                        if (StockCanbusBridge.STOCK_PACKAGE.equals(packageName)) {
+                            stockFound = true;
+                            lastStockWindowSeenMs = System.currentTimeMillis();
+                            scanNode(root);
+
+                            if (prefs.getBoolean("bridge_enabled", false) &&
+                                    lastFrameSeenMs < prefs.getLong("bridge_launch_ms", 0) &&
+                                    System.currentTimeMillis() -
+                                            prefs.getLong("bridge_launch_ms", 0) >
+                                            AUTO_CAPTURE_DELAY_MS) {
+                                tryEnableCapture(root);
+                            }
+                        }
+                    } finally {
+                        if (root != null) root.recycle();
+                    }
+                }
             }
-            rememberExternalPackage(packageName);
+        } catch (Throwable ignored) {
         }
 
-        scanNode(root);
-        root.recycle();
+        // Fallback for firmwares which don't expose interactive-window enumeration.
+        if (!stockFound) {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) {
+                try {
+                    CharSequence pkg = root.getPackageName();
+                    if (pkg != null) {
+                        String packageName = pkg.toString();
+                        rememberExternalPackage(packageName);
+                        if (StockCanbusBridge.STOCK_PACKAGE.equals(packageName)) {
+                            lastStockWindowSeenMs = System.currentTimeMillis();
+                            scanNode(root);
+                            if (prefs.getBoolean("bridge_enabled", false)) {
+                                tryEnableCapture(root);
+                            }
+                        }
+                    }
+                } finally {
+                    root.recycle();
+                }
+            }
+        }
+
+        prefs.edit()
+                .putLong("bridge_stock_window_ms", lastStockWindowSeenMs)
+                .putLong("bridge_last_frame_ms", lastFrameSeenMs)
+                .apply();
     }
 
     private void scanNode(AccessibilityNodeInfo node) {
@@ -115,9 +184,14 @@ public class CanScreenAccessibilityService extends AccessibilityService {
         if (block == null || block.indexOf("2E") < 0) return;
 
         String[] lines = block.split("\\r?\\n");
+        boolean found = false;
+
         for (String line : lines) {
             FrameParser.Frame frame = FrameParser.parseLine(line);
-            if (frame != null) recordFrame(frame);
+            if (frame != null) {
+                found = true;
+                recordFrame(frame);
+            }
         }
 
         if (lines.length == 1) {
@@ -128,13 +202,93 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                 int next = block.indexOf("2E ", p + 3);
                 String candidate = next < 0 ? block.substring(p) : block.substring(p, next);
                 FrameParser.Frame frame = FrameParser.parseLine(candidate);
-                if (frame != null) recordFrame(frame);
+                if (frame != null) {
+                    found = true;
+                    recordFrame(frame);
+                }
                 cursor = next < 0 ? block.length() : next;
             }
+        }
+
+        if (found) {
+            lastFrameSeenMs = System.currentTimeMillis();
+            prefs.edit()
+                    .putString("bridge_status", "RAW поток получен из штатного CANBUS процесса")
+                    .apply();
+        }
+    }
+
+    private void tryEnableCapture(AccessibilityNodeInfo root) {
+        long now = System.currentTimeMillis();
+        if (lastFrameSeenMs > 0 && now - lastFrameSeenMs < 1500) return;
+        if (now - lastCaptureAttemptMs < 2800) return;
+
+        AccessibilityNodeInfo candidate = findCaptureNode(root);
+        if (candidate == null) return;
+
+        lastCaptureAttemptMs = now;
+        boolean clicked = false;
+        AccessibilityNodeInfo cur = candidate;
+
+        for (int i = 0; i < 5 && cur != null; i++) {
+            if (cur.isClickable()) {
+                clicked = cur.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                break;
+            }
+            AccessibilityNodeInfo parent = cur.getParent();
+            if (cur != candidate) cur.recycle();
+            cur = parent;
+        }
+
+        if (cur != null && cur != candidate) cur.recycle();
+        candidate.recycle();
+
+        prefs.edit()
+                .putString("bridge_capture_status",
+                        clicked ? "Capture включён автоматически" :
+                                "Найден Capture, но автоклик не сработал")
+                .apply();
+    }
+
+    private AccessibilityNodeInfo findCaptureNode(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+
+        String joined = "";
+        CharSequence t = node.getText();
+        CharSequence d = node.getContentDescription();
+        if (t != null) joined += t.toString();
+        if (d != null) joined += " " + d.toString();
+
+        if (joined.toLowerCase(Locale.US).contains("capture")) {
+            return AccessibilityNodeInfo.obtain(node);
+        }
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                AccessibilityNodeInfo found = findCaptureNode(child);
+                child.recycle();
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private void maintainBridge() {
+        if (!prefs.getBoolean("bridge_enabled", false)) return;
+
+        long now = System.currentTimeMillis();
+        boolean stockAlive = now - lastStockWindowSeenMs < 1200;
+
+        if (!stockAlive && now - lastBridgeLaunchAttemptMs > RELAUNCH_DELAY_MS) {
+            lastBridgeLaunchAttemptMs = now;
+            StockCanbusBridge.launch(this);
         }
     }
 
     private synchronized void recordFrame(FrameParser.Frame frame) {
+        lastFrameSeenMs = System.currentTimeMillis();
+
         boolean meaningful = false;
         String annotation = "";
 
@@ -145,7 +299,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             if (previous == null || previous != state) {
                 lastKeyStates.put(keyId, state);
                 meaningful = true;
-                annotation = "SCREEN KEY " + VehicleData.keyName(keyId) +
+                annotation = "BRIDGE KEY " + VehicleData.keyName(keyId) +
                         " id=" + hex(keyId) + " state=" + keyStateName(state);
             }
         } else if (frame.command == 0x01) {
@@ -153,15 +307,15 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             if (!payload.equals(lastVehiclePayload)) {
                 lastVehiclePayload = payload;
                 meaningful = true;
-                annotation = "SCREEN VEHICLE_STATUS changed";
+                annotation = "BRIDGE VEHICLE_STATUS changed";
             }
         } else if (frame.command == 0xC8) {
             meaningful = true;
-            annotation = "SCREEN CLOCK";
+            annotation = "BRIDGE CLOCK";
         } else if (!frame.hex.equals(lastOtherFrame)) {
             lastOtherFrame = frame.hex;
             meaningful = true;
-            annotation = "SCREEN CMD=" + hex(frame.command);
+            annotation = "BRIDGE CMD=" + hex(frame.command);
         }
 
         if (!meaningful) return;
@@ -176,9 +330,9 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                 .putLong("frames_bad", bad)
                 .putLong("last_activity_ms", System.currentTimeMillis())
                 .putString("last_frame", frame.hex)
-                .putString("last_direction", "SCREEN")
+                .putString("last_direction", "BRIDGE")
                 .putString("last_command", hex(frame.command))
-                .putString("accessibility_status", "включён; CANBUS-экран читается");
+                .putString("accessibility_status", "CANBUS bridge активен");
 
         if (frame.command == 0x20 && frame.data.length >= 2) {
             int keyId = frame.unsigned(0);
@@ -192,14 +346,14 @@ public class CanScreenAccessibilityService extends AccessibilityService {
 
         e.apply();
 
-        appendCapture(annotation + " | SCREEN " + frame.hex +
+        appendCapture(annotation + " | BRIDGE " + frame.hex +
                 " | checksum=" + (frame.checksumOk ? "OK" : "BAD"));
     }
 
-    private void updateAccessibilityOverlay() {
+    private void updateBridgeOverlay() {
         if (prefs == null) return;
 
-        boolean enabled = prefs.getBoolean("overlay_enabled", false);
+        boolean enabled = prefs.getBoolean("bridge_enabled", false);
         if (!enabled) {
             removeOverlay();
             prefs.edit().putBoolean("accessibility_overlay_active", false).apply();
@@ -208,13 +362,14 @@ public class CanScreenAccessibilityService extends AccessibilityService {
 
         if (overlayView == null) {
             try {
-                createOverlay();
+                createFullScreenOverlay();
                 prefs.edit().putBoolean("accessibility_overlay_active", true).apply();
             } catch (Throwable t) {
                 prefs.edit()
                         .putBoolean("accessibility_overlay_active", false)
                         .putString("accessibility_overlay_error",
-                                t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage()))
+                                t.getClass().getSimpleName() + ": " +
+                                        (t.getMessage() == null ? "" : t.getMessage()))
                         .apply();
                 return;
             }
@@ -223,61 +378,179 @@ public class CanScreenAccessibilityService extends AccessibilityService {
         int mask = prefs.getInt("door_mask", 0);
         if (overlayCar != null) overlayCar.setDoorMask(mask);
 
-        if (overlayText != null) {
-            String key = prefs.getString("last_key_name", "—");
-            String direct = prefs.getString("direct_status", "");
-            overlayText.setText(VehicleData.doorsText(mask) +
-                    "\nКнопка: " + key +
-                    (direct.startsWith("ПОДКЛЮЧЕНО") ? "\nDIRECT: OK" : ""));
-            overlayText.setTextColor(mask == 0
-                    ? Color.LTGRAY
+        long age = lastFrameSeenMs == 0 ? Long.MAX_VALUE :
+                System.currentTimeMillis() - lastFrameSeenMs;
+
+        if (overlayStatus != null) {
+            String status = age < 1200
+                    ? "CANBUS ● RAW поток активен"
+                    : "CANBUS ○ запускаю штатный декодер…";
+            overlayStatus.setText(status);
+            overlayStatus.setTextColor(age < 1200
+                    ? Color.rgb(110, 230, 130)
+                    : Color.rgb(240, 190, 90));
+        }
+
+        if (overlayDoors != null) {
+            overlayDoors.setText(VehicleData.doorsText(mask));
+            overlayDoors.setTextColor(mask == 0
+                    ? Color.rgb(170, 220, 170)
                     : Color.rgb(255, 105, 105));
+        }
+
+        if (overlayData != null) {
+            int range = prefs.getInt("range_candidate", -1);
+            int outside = prefs.getInt("outside_candidate", -1);
+            int hour = prefs.getInt("box_hour", -1);
+            int minute = prefs.getInt("box_minute", -1);
+
+            StringBuilder s = new StringBuilder();
+            s.append("Запас хода: ");
+            s.append(range < 0 ? "—" : range + " км");
+            s.append("\nНаружная t°: ");
+            s.append(outside < 0 || outside == 0xFF ? "—" : outside + " °C");
+            s.append("\nВремя CAN: ");
+            s.append(hour >= 0 && minute >= 0
+                    ? String.format(Locale.US, "%02d:%02d", hour, minute)
+                    : "—");
+            s.append("\nКадров: ").append(prefs.getLong("screen_frames", 0));
+            overlayData.setText(s.toString());
+        }
+
+        if (overlayKey != null) {
+            overlayKey.setText("Последняя кнопка: " +
+                    prefs.getString("last_key_name", "—") +
+                    "  " + prefs.getString("last_key_state", ""));
         }
     }
 
-    private void createOverlay() {
+    private void createFullScreenOverlay() {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
 
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(8, 5, 8, 5);
-        box.setBackgroundColor(Color.argb(235, 12, 14, 18));
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(24, 12, 24, 18);
+        root.setBackgroundColor(Color.rgb(12, 14, 18));
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        root.addView(top, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         TextView title = new TextView(this);
-        title.setText("PEUGEOT 307");
-        title.setTextSize(14);
+        title.setText("PEUGEOT 307 CARINFO  AUTO");
         title.setTextColor(Color.WHITE);
-        title.setGravity(Gravity.CENTER);
-        box.addView(title, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
+        title.setTextSize(24);
+        top.addView(title, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button exit = new Button(this);
+        exit.setText("ВЫЙТИ");
+        exit.setTextSize(12);
+        exit.setOnClickListener(v -> exitBridgeMode());
+        top.addView(exit, new LinearLayout.LayoutParams(
+                130, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        overlayStatus = new TextView(this);
+        overlayStatus.setText("CANBUS: запуск…");
+        overlayStatus.setGravity(Gravity.CENTER_HORIZONTAL);
+        overlayStatus.setTextSize(16);
+        overlayStatus.setTextColor(Color.LTGRAY);
+        overlayStatus.setPadding(0, 3, 0, 8);
+        root.addView(overlayStatus);
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.HORIZONTAL);
+        body.setGravity(Gravity.CENTER_VERTICAL);
+        root.addView(body, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        body.addView(left, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.MATCH_PARENT, 1.12f));
 
         overlayCar = new CarDoorView(this);
-        box.addView(overlayCar, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 180));
+        left.addView(overlayCar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        overlayText = new TextView(this);
-        overlayText.setTextSize(12);
-        overlayText.setTextColor(Color.LTGRAY);
-        overlayText.setGravity(Gravity.CENTER);
-        box.addView(overlayText, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
+        overlayDoors = new TextView(this);
+        overlayDoors.setText("Все двери закрыты");
+        overlayDoors.setGravity(Gravity.CENTER_HORIZONTAL);
+        overlayDoors.setTextSize(19);
+        overlayDoors.setTextColor(Color.rgb(170, 220, 170));
+        overlayDoors.setPadding(0, 4, 0, 6);
+        left.addView(overlayDoors);
+
+        LinearLayout right = new LinearLayout(this);
+        right.setOrientation(LinearLayout.VERTICAL);
+        right.setPadding(18, 10, 0, 0);
+        body.addView(right, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.MATCH_PARENT, 0.88f));
+
+        TextView source = new TextView(this);
+        source.setText("Источник: штатный com.cartech.service.canbus\nDebugActivity работает скрыто под этим экраном.");
+        source.setTextSize(14);
+        source.setTextColor(Color.rgb(130, 180, 240));
+        source.setPadding(10, 10, 10, 14);
+        source.setBackgroundColor(Color.rgb(28, 31, 37));
+        right.addView(source);
+
+        overlayData = new TextView(this);
+        overlayData.setText("Запас хода: —\nНаружная t°: —\nВремя CAN: —");
+        overlayData.setTextSize(18);
+        overlayData.setTextColor(Color.WHITE);
+        overlayData.setPadding(10, 16, 10, 16);
+        right.addView(overlayData);
+
+        overlayKey = new TextView(this);
+        overlayKey.setText("Последняя кнопка: —");
+        overlayKey.setTextSize(16);
+        overlayKey.setTextColor(Color.LTGRAY);
+        overlayKey.setPadding(10, 8, 10, 8);
+        right.addView(overlayKey);
+
+        TextView note = new TextView(this);
+        note.setText("Это безопасный read-only мост: штатный CANBUS процесс продолжает владеть /dev/ttyCanbus, CarInfo только читает его Debug UI через Accessibility.");
+        note.setTextSize(12);
+        note.setTextColor(Color.rgb(150, 155, 165));
+        note.setPadding(10, 14, 10, 8);
+        right.addView(note);
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                290,
-                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE |
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.END;
-        lp.x = 4;
-        lp.y = 62;
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.OPAQUE);
+        lp.gravity = Gravity.TOP | Gravity.START;
 
-        windowManager.addView(box, lp);
-        overlayView = box;
+        windowManager.addView(root, lp);
+        overlayView = root;
+    }
+
+    private void exitBridgeMode() {
+        StockCanbusBridge.disable(this);
+        removeOverlay();
+        prefs.edit().putBoolean("accessibility_overlay_active", false).apply();
+
+        try {
+            performGlobalAction(GLOBAL_ACTION_BACK);
+        } catch (Throwable ignored) {
+        }
+
+        try {
+            Intent i = new Intent(this, MainActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP |
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            startActivity(i);
+        } catch (Throwable ignored) {
+        }
     }
 
     private void removeOverlay() {
@@ -289,7 +562,10 @@ public class CanScreenAccessibilityService extends AccessibilityService {
         }
         overlayView = null;
         overlayCar = null;
-        overlayText = null;
+        overlayStatus = null;
+        overlayDoors = null;
+        overlayData = null;
+        overlayKey = null;
     }
 
     private String keyStateName(int state) {
@@ -310,8 +586,9 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             File capture = new File(getFilesDir(), "capture.log");
             boolean append = capture.exists() && capture.length() < 2L * 1024L * 1024L;
             try (FileWriter w = new FileWriter(capture, append)) {
-                if (!append) w.write("# Peugeot 307 CarInfo capture v0.6\n");
-                String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
+                if (!append) w.write("# Peugeot 307 CarInfo bridge capture v0.8\n");
+                String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+                        .format(new Date());
                 w.write(ts + " " + text + "\n");
             }
         } catch (Exception ignored) {
