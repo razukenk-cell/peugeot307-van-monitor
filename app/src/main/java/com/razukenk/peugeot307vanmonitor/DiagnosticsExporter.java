@@ -23,10 +23,10 @@ final class DiagnosticsExporter {
     static Uri export(Context context) throws Exception {
         SharedPreferences p = context.getSharedPreferences("monitor", Context.MODE_PRIVATE);
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String filename = "peugeot307_diagnostic_v06_" + stamp + ".txt";
+        String filename = "peugeot307_diagnostic_v07_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 CarInfo diagnostic v0.6\n");
+        report.append("Peugeot 307 CarInfo diagnostic v0.7\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
@@ -53,6 +53,14 @@ final class DiagnosticsExporter {
 
         report.append("[DIRECT CarData]\n");
         report.append("Status: ").append(p.getString("direct_status", "unknown")).append("\n");
+        report.append("Exact API: ").append(p.getBoolean("direct_exact_api", false)).append("\n");
+        report.append("Direct door state: ").append(p.getString("direct_door_state_hex", "(none)")).append("\n");
+        report.append("Direct hood open: ").append(p.getBoolean("direct_hood_open", false)).append("\n");
+        report.append("Direct outside temp: ").append(p.getString("direct_out_temp", "(none)")).append("\n");
+        report.append("Direct turn state: ").append(p.getInt("direct_turn_state", -999)).append("\n");
+        report.append("Direct CAN-box version: ").append(p.getString("direct_canbox_version", "(none)")).append("\n");
+        report.append("Direct current CANBUS: ").append(p.getString("direct_current_canbus", "(none)")).append("\n");
+        report.append("Exact error: ").append(p.getString("direct_exact_error", "(none)")).append("\n");
         report.append("Listener: ").append(p.getString("direct_listener", "unknown")).append("\n");
         report.append("Key count: ").append(p.getInt("direct_key_count", 0)).append("\n");
         report.append("Last key: ").append(p.getString("direct_last_key", "(none)")).append("\n");
