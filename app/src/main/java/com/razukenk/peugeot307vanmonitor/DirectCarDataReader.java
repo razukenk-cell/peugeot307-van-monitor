@@ -18,6 +18,14 @@ import java.util.Locale;
 import java.util.Set;
 
 final class DirectCarDataReader {
+    private static final int MISSING_INT = Integer.MIN_VALUE + 307;
+
+    private static final String KEY_DOOR = "state.canbus.door_state.i";
+    private static final String KEY_TURN = "state.canbus.turn_state.i";
+    private static final String KEY_OUT_TEMP = "state.canbus.out_temp.s";
+    private static final String KEY_CANBOX_VERSION = "state.canbus.canbox_version.s";
+    private static final String KEY_CURRENT_CANBUS = "factory.canbus.current_canbus.s";
+
     private final Context context;
     private final SharedPreferences prefs;
 
@@ -27,6 +35,7 @@ final class DirectCarDataReader {
 
     private Method hasKey;
     private Method listKey;
+
     private Method getBool;
     private Method getBoolArray;
     private Method getByte;
@@ -36,15 +45,24 @@ final class DirectCarDataReader {
     private Method getFloat;
     private Method getFloatArray;
     private Method getInt;
+    private Method getIntIndexed;
     private Method getIntArray;
     private Method getLong;
     private Method getLongArray;
     private Method getString;
+    private Method getStringIndexed;
     private Method getStringArray;
 
     private final Set<String> knownKeys = new LinkedHashSet<>();
     private final ArrayDeque<String> recent = new ArrayDeque<>();
+
     private boolean started;
+    private int lastDoor = Integer.MIN_VALUE;
+    private int lastTurn = Integer.MIN_VALUE;
+    private String lastOutTemp;
+    private String lastCanboxVersion;
+    private String lastCurrentCanbus;
+    private long lastRediscoverMs;
 
     DirectCarDataReader(Context context) {
         this.context = context.getApplicationContext();
@@ -67,23 +85,34 @@ final class DirectCarDataReader {
             } catch (Throwable ignored) {
             }
 
-            hasKey = carDataClass.getMethod("hasKey", String.class);
-            listKey = carDataClass.getMethod("listKey", String[].class);
-            getBool = carDataClass.getMethod("getBool", String.class, boolean.class);
-            getBoolArray = carDataClass.getMethod("getBoolArray", String.class);
-            getByte = carDataClass.getMethod("getByte", String.class, int.class);
-            getByteArray = carDataClass.getMethod("getByteArray", String.class);
-            getDouble = carDataClass.getMethod("getDouble", String.class, double.class);
-            getDoubleArray = carDataClass.getMethod("getDoubleArray", String.class);
-            getFloat = carDataClass.getMethod("getFloat", String.class, float.class);
-            getFloatArray = carDataClass.getMethod("getFloatArray", String.class);
-            getInt = carDataClass.getMethod("getInt", String.class, int.class);
-            getIntArray = carDataClass.getMethod("getIntArray", String.class);
-            getLong = carDataClass.getMethod("getLong", String.class, long.class);
-            getLongArray = carDataClass.getMethod("getLongArray", String.class);
-            getString = carDataClass.getMethod("getString", String.class);
-            getStringArray = carDataClass.getMethod("getStringArray", String.class);
-            removeListener = carDataClass.getMethod("removeListener",
+            hasKey = find(carDataClass, "hasKey", String.class);
+            listKey = find(carDataClass, "listKey", String[].class);
+
+            getBool = find(carDataClass, "getBool", String.class, boolean.class);
+            getBoolArray = find(carDataClass, "getBoolArray", String.class);
+            getByte = find(carDataClass, "getByte", String.class, int.class);
+            getByteArray = find(carDataClass, "getByteArray", String.class);
+            getDouble = find(carDataClass, "getDouble", String.class, double.class);
+            getDoubleArray = find(carDataClass, "getDoubleArray", String.class);
+            getFloat = find(carDataClass, "getFloat", String.class, float.class);
+            getFloatArray = find(carDataClass, "getFloatArray", String.class);
+
+            // There are TWO integer APIs on this firmware:
+            // getInt(key, default) for common global state and
+            // getInt(key, index, default) for CANBUS values.
+            getInt = find(carDataClass, "getInt", String.class, int.class);
+            getIntIndexed = find(carDataClass, "getInt", String.class, int.class, int.class);
+            getIntArray = find(carDataClass, "getIntArray", String.class);
+
+            getLong = find(carDataClass, "getLong", String.class, long.class);
+            getLongArray = find(carDataClass, "getLongArray", String.class);
+
+            // Same story for strings: CANBUS properties use getString(key, index).
+            getString = find(carDataClass, "getString", String.class);
+            getStringIndexed = find(carDataClass, "getString", String.class, int.class);
+            getStringArray = find(carDataClass, "getStringArray", String.class);
+
+            removeListener = find(carDataClass, "removeListener",
                     Class.forName("android.cartech.cardata.CarData$CarDataListener"));
 
             discoverKeys();
@@ -93,9 +122,15 @@ final class DirectCarDataReader {
                     .putString("direct_status", "ПОДКЛЮЧЕНО к android.cartech.cardata.CarData")
                     .putInt("direct_key_count", knownKeys.size())
                     .putLong("direct_connected_ms", System.currentTimeMillis())
+                    .putBoolean("direct_exact_api",
+                            getIntIndexed != null && getStringIndexed != null)
                     .apply();
 
-            append("# DIRECT CarData connected; keys=" + knownKeys.size());
+            append("# DIRECT CarData connected; keys=" + knownKeys.size()
+                    + " indexedInt=" + (getIntIndexed != null)
+                    + " indexedString=" + (getStringIndexed != null));
+
+            pollExactCanbus();
             snapshotInteresting();
             return true;
         } catch (Throwable t) {
@@ -109,16 +144,21 @@ final class DirectCarDataReader {
         }
     }
 
+    private static Method find(Class<?> cls, String name, Class<?>... args) {
+        try {
+            return cls.getMethod(name, args);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     private void discoverKeys() {
         if (carData == null || listKey == null) return;
 
         String[][] filters = new String[][]{
                 new String[]{"*"},
-                new String[]{"CAR_INFO", "CAR_INFO_1", "CAR_INFO_2", "CAR_INFO_3", "CAR_INFO_4",
-                        "BASE_INFO", "BASE_INFO_1", "CAR_SPEED", "OUT_TEMP", "ENV_TEMP",
-                        "OUTSIDETEMP", "AIR", "AIR_INFO", "WHEEL_KEY", "PANEL_KEY", "KNOB_KEY",
-                        "CAR_TIME", "CAR_MODEL", "SYSTEM_INFO", "VERSION", "CAR_CANBUS_INFO",
-                        "CAR_CANBUS_AIR"}
+                new String[]{"state.canbus.", "data.canbus.", "factory.canbus."},
+                new String[]{KEY_DOOR, KEY_TURN, KEY_OUT_TEMP, KEY_CANBOX_VERSION, KEY_CURRENT_CANBUS}
         };
 
         for (String[] filter : filters) {
@@ -131,12 +171,11 @@ final class DirectCarDataReader {
             }
         }
 
-        // Exact names are useful on firmwares where listKey("*") is restricted.
         knownKeys.addAll(Arrays.asList(
-                "CAR_SPEED", "OUT_TEMP", "ENV_TEMP", "OUTSIDETEMP",
-                "CAR_INFO", "CAR_INFO_1", "CAR_INFO_2", "CAR_INFO_3", "CAR_INFO_4",
-                "BASE_INFO", "BASE_INFO_1", "AIR", "AIR_INFO", "WHEEL_KEY",
-                "PANEL_KEY", "KNOB_KEY", "CAR_TIME", "CAR_MODEL", "SYSTEM_INFO", "VERSION"
+                KEY_DOOR, KEY_TURN, KEY_OUT_TEMP, KEY_CANBOX_VERSION, KEY_CURRENT_CANBUS,
+                "state.main.acc_on.z", "state.main.headlight_on.z",
+                "state.main.brake_state.z", "state.main.backcar_state.z",
+                "state.main.battery_volt.i"
         ));
 
         append("# KEYS");
@@ -178,7 +217,8 @@ final class DirectCarDataReader {
         } catch (Throwable t) {
             append("# listener failed: " + t);
             prefs.edit().putString("direct_listener",
-                    "listener недоступен; работает опрос: " + t.getClass().getSimpleName()).apply();
+                    "listener недоступен; точный опрос работает: " +
+                            t.getClass().getSimpleName()).apply();
         }
     }
 
@@ -192,19 +232,11 @@ final class DirectCarDataReader {
                 "   reason=" + String.valueOf(reason);
 
         append("CHANGE " + row);
-        recent.addFirst(row);
-        while (recent.size() > 20) recent.removeLast();
-
-        StringBuilder sb = new StringBuilder();
-        for (String x : recent) {
-            if (sb.length() > 0) sb.append('\n');
-            sb.append(x);
-        }
+        addRecent(row);
 
         prefs.edit()
                 .putString("direct_last_key", key)
                 .putString("direct_last_value", value)
-                .putString("direct_recent", sb.toString())
                 .putInt("direct_key_count", knownKeys.size())
                 .putLong("direct_last_ms", System.currentTimeMillis())
                 .apply();
@@ -212,87 +244,275 @@ final class DirectCarDataReader {
 
     synchronized void poll() {
         if (carData == null) return;
+
+        pollExactCanbus();
+
+        long now = System.currentTimeMillis();
+        if (now - lastRediscoverMs > 5000) {
+            lastRediscoverMs = now;
+            discoverKeysQuietly();
+        }
+
         snapshotInteresting();
     }
 
+    private void discoverKeysQuietly() {
+        if (listKey == null) return;
+        try {
+            Object value = listKey.invoke(carData, (Object) new String[]{"*"});
+            if (value instanceof String[]) {
+                String[] arr = (String[]) value;
+                int before = knownKeys.size();
+                knownKeys.addAll(Arrays.asList(arr));
+                if (knownKeys.size() != before) {
+                    prefs.edit().putInt("direct_key_count", knownKeys.size()).apply();
+                    append("# REDISCOVER keys=" + knownKeys.size());
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void pollExactCanbus() {
+        int door = getCanInt(KEY_DOOR, MISSING_INT);
+        int turn = getCanInt(KEY_TURN, MISSING_INT);
+        String outTemp = getCanString(KEY_OUT_TEMP);
+        String canboxVersion = getCanString(KEY_CANBOX_VERSION);
+        String currentCanbus = getCanString(KEY_CURRENT_CANBUS);
+
+        SharedPreferences.Editor e = prefs.edit();
+        boolean changed = false;
+
+        if (door != MISSING_INT) {
+            e.putInt("direct_door_state", door);
+            e.putString("direct_door_state_hex", String.format(Locale.US, "0x%02X", door & 0xFF));
+
+            int rp5Mask = genericDoorToRp5Mask(door);
+            e.putInt("door_mask", rp5Mask);
+            e.putString("doors_text", VehicleData.doorsText(rp5Mask));
+            e.putBoolean("direct_hood_open", (door & 0x20) != 0);
+
+            if (door != lastDoor) {
+                lastDoor = door;
+                changed = true;
+                String row = "DIRECT " + KEY_DOOR + " = " +
+                        String.format(Locale.US, "0x%02X", door & 0xFF) +
+                        " => " + VehicleData.doorsText(rp5Mask) +
+                        (((door & 0x20) != 0) ? ", капот открыт" : "");
+                append(row);
+                addRecent(row);
+            }
+        }
+
+        if (turn != MISSING_INT) {
+            e.putInt("direct_turn_state", turn);
+            if (turn != lastTurn) {
+                lastTurn = turn;
+                changed = true;
+                String row = "DIRECT " + KEY_TURN + " = " + turn;
+                append(row);
+                addRecent(row);
+            }
+        }
+
+        if (outTemp != null) {
+            e.putString("direct_out_temp", outTemp);
+            if (!outTemp.equals(lastOutTemp)) {
+                lastOutTemp = outTemp;
+                changed = true;
+                String row = "DIRECT " + KEY_OUT_TEMP + " = " + outTemp;
+                append(row);
+                addRecent(row);
+            }
+        }
+
+        if (canboxVersion != null) {
+            e.putString("direct_canbox_version", canboxVersion);
+            if (!canboxVersion.equals(lastCanboxVersion)) {
+                lastCanboxVersion = canboxVersion;
+                append("DIRECT " + KEY_CANBOX_VERSION + " = " + canboxVersion);
+            }
+        }
+
+        if (currentCanbus != null) {
+            e.putString("direct_current_canbus", currentCanbus);
+            if (!currentCanbus.equals(lastCurrentCanbus)) {
+                lastCurrentCanbus = currentCanbus;
+                append("DIRECT " + KEY_CURRENT_CANBUS + " = " + currentCanbus);
+            }
+        }
+
+        if (changed) {
+            e.putLong("direct_canbus_last_ms", System.currentTimeMillis())
+                    .putLong("last_activity_ms", System.currentTimeMillis());
+        }
+
+        e.putString("direct_recent", recentText());
+        e.apply();
+    }
+
+    private int getCanInt(String key, int def) {
+        if (carData == null) return def;
+
+        if (getIntIndexed != null) {
+            try {
+                Object v = getIntIndexed.invoke(carData, key, 0, def);
+                if (v instanceof Integer) return (Integer) v;
+            } catch (Throwable t) {
+                prefs.edit().putString("direct_exact_error",
+                        key + ": " + t.getClass().getSimpleName()).apply();
+            }
+        }
+
+        if (getInt != null) {
+            try {
+                Object v = getInt.invoke(carData, key, def);
+                if (v instanceof Integer) return (Integer) v;
+            } catch (Throwable ignored) {
+            }
+        }
+
+        return def;
+    }
+
+    private String getCanString(String key) {
+        if (carData == null) return null;
+
+        if (getStringIndexed != null) {
+            try {
+                Object v = getStringIndexed.invoke(carData, key, 0);
+                if (v != null) {
+                    String s = String.valueOf(v);
+                    if (!s.isEmpty()) return s;
+                }
+            } catch (Throwable t) {
+                prefs.edit().putString("direct_exact_error",
+                        key + ": " + t.getClass().getSimpleName()).apply();
+            }
+        }
+
+        if (getString != null) {
+            try {
+                Object v = getString.invoke(carData, key);
+                if (v != null) {
+                    String s = String.valueOf(v);
+                    if (!s.isEmpty()) return s;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        return null;
+    }
+
+    private int genericDoorToRp5Mask(int generic) {
+        int out = 0;
+        if ((generic & 0x01) != 0) out |= VehicleData.FRONT_LEFT;
+        if ((generic & 0x02) != 0) out |= VehicleData.FRONT_RIGHT;
+        if ((generic & 0x04) != 0) out |= VehicleData.REAR_LEFT;
+        if ((generic & 0x08) != 0) out |= VehicleData.REAR_RIGHT;
+        if ((generic & 0x10) != 0) out |= VehicleData.BOOT;
+        return out;
+    }
+
     private void snapshotInteresting() {
-        String[] interesting = {
-                "CAR_SPEED", "OUT_TEMP", "ENV_TEMP", "OUTSIDETEMP",
-                "CAR_INFO", "CAR_INFO_1", "CAR_INFO_2", "CAR_INFO_3", "CAR_INFO_4",
-                "BASE_INFO", "BASE_INFO_1", "AIR", "AIR_INFO", "WHEEL_KEY",
-                "PANEL_KEY", "KNOB_KEY", "CAR_TIME"
+        StringBuilder sb = new StringBuilder();
+
+        appendSnapshot(sb, KEY_DOOR, getCanInt(KEY_DOOR, MISSING_INT));
+        appendSnapshot(sb, KEY_TURN, getCanInt(KEY_TURN, MISSING_INT));
+        appendSnapshot(sb, KEY_OUT_TEMP, getCanString(KEY_OUT_TEMP));
+        appendSnapshot(sb, KEY_CANBOX_VERSION, getCanString(KEY_CANBOX_VERSION));
+        appendSnapshot(sb, KEY_CURRENT_CANBUS, getCanString(KEY_CURRENT_CANBUS));
+
+        String[] common = {
+                "state.main.acc_on.z",
+                "state.main.headlight_on.z",
+                "state.main.brake_state.z",
+                "state.main.backcar_state.z",
+                "state.main.battery_volt.i"
         };
 
-        StringBuilder sb = new StringBuilder();
-        for (String key : interesting) {
+        for (String key : common) {
             String value = readKey(key);
-            if ("<missing>".equals(value)) continue;
-            if (sb.length() > 0) sb.append('\n');
-            sb.append(key).append(" = ").append(value);
+            if (!"<missing>".equals(value)) {
+                if (sb.length() > 0) sb.append('\n');
+                sb.append(key).append(" = ").append(value);
+            }
         }
 
-        if (sb.length() > 0) {
-            prefs.edit()
-                    .putString("direct_snapshot", sb.toString())
-                    .putLong("direct_last_ms", System.currentTimeMillis())
-                    .apply();
-        }
+        prefs.edit()
+                .putString("direct_snapshot", sb.length() == 0 ? "(none)" : sb.toString())
+                .putLong("direct_last_ms", System.currentTimeMillis())
+                .apply();
+    }
+
+    private void appendSnapshot(StringBuilder sb, String key, int value) {
+        if (value == MISSING_INT) return;
+        if (sb.length() > 0) sb.append('\n');
+        sb.append(key).append(" = ").append(value);
+    }
+
+    private void appendSnapshot(StringBuilder sb, String key, String value) {
+        if (value == null) return;
+        if (sb.length() > 0) sb.append('\n');
+        sb.append(key).append(" = ").append(value);
     }
 
     private String readKey(String key) {
         if (carData == null) return "<offline>";
 
         try {
-            Object exists = hasKey.invoke(carData, key);
-            if (exists instanceof Boolean && !((Boolean) exists)) {
-                // Typed keys may be returned by listKey; exact aliases can still be queried below.
-                if (key.contains(".")) return "<missing>";
+            if (key.endsWith(".z") && getBool != null)
+                return String.valueOf(getBool.invoke(carData, key, false));
+            if (key.endsWith(".Z") && getBoolArray != null)
+                return arrayToString(getBoolArray.invoke(carData, key));
+            if (key.endsWith(".b") && getByte != null)
+                return String.valueOf(getByte.invoke(carData, key, Integer.MIN_VALUE));
+            if (key.endsWith(".B") && getByteArray != null)
+                return hexArray(getByteArray.invoke(carData, key));
+            if (key.endsWith(".d") && getDouble != null)
+                return String.valueOf(getDouble.invoke(carData, key, Double.NaN));
+            if (key.endsWith(".D") && getDoubleArray != null)
+                return arrayToString(getDoubleArray.invoke(carData, key));
+            if (key.endsWith(".f") && getFloat != null)
+                return String.valueOf(getFloat.invoke(carData, key, Float.NaN));
+            if (key.endsWith(".F") && getFloatArray != null)
+                return arrayToString(getFloatArray.invoke(carData, key));
+            if (key.endsWith(".i")) {
+                int v = getCanInt(key, MISSING_INT);
+                return v == MISSING_INT ? "<missing>" : String.valueOf(v);
             }
-        } catch (Throwable ignored) {
-        }
-
-        try {
-            if (key.endsWith(".z")) return String.valueOf(getBool.invoke(carData, key, false));
-            if (key.endsWith(".Z")) return arrayToString(getBoolArray.invoke(carData, key));
-            if (key.endsWith(".b")) return String.valueOf(getByte.invoke(carData, key, Integer.MIN_VALUE));
-            if (key.endsWith(".B")) return hexArray(getByteArray.invoke(carData, key));
-            if (key.endsWith(".d")) return String.valueOf(getDouble.invoke(carData, key, Double.NaN));
-            if (key.endsWith(".D")) return arrayToString(getDoubleArray.invoke(carData, key));
-            if (key.endsWith(".f")) return String.valueOf(getFloat.invoke(carData, key, Float.NaN));
-            if (key.endsWith(".F")) return arrayToString(getFloatArray.invoke(carData, key));
-            if (key.endsWith(".i")) return String.valueOf(getInt.invoke(carData, key, Integer.MIN_VALUE));
-            if (key.endsWith(".I")) return arrayToString(getIntArray.invoke(carData, key));
-            if (key.endsWith(".l")) return String.valueOf(getLong.invoke(carData, key, Long.MIN_VALUE));
-            if (key.endsWith(".L")) return arrayToString(getLongArray.invoke(carData, key));
-            if (key.endsWith(".s")) return String.valueOf(getString.invoke(carData, key));
-            if (key.endsWith(".S")) return arrayToString(getStringArray.invoke(carData, key));
+            if (key.endsWith(".I") && getIntArray != null)
+                return arrayToString(getIntArray.invoke(carData, key));
+            if (key.endsWith(".l") && getLong != null)
+                return String.valueOf(getLong.invoke(carData, key, Long.MIN_VALUE));
+            if (key.endsWith(".L") && getLongArray != null)
+                return arrayToString(getLongArray.invoke(carData, key));
+            if (key.endsWith(".s")) {
+                String v = getCanString(key);
+                return v == null ? "<missing>" : v;
+            }
+            if (key.endsWith(".S") && getStringArray != null)
+                return arrayToString(getStringArray.invoke(carData, key));
         } catch (Throwable t) {
             return "<err:" + t.getClass().getSimpleName() + ">";
         }
 
-        // Untyped aliases used by the stock CANBUS APK are usually arrays.
-        try {
-            Object v = getIntArray.invoke(carData, key);
-            if (v != null) return "I" + arrayToString(v);
-        } catch (Throwable ignored) {
-        }
-        try {
-            Object v = getByteArray.invoke(carData, key);
-            if (v != null) return "B" + hexArray(v);
-        } catch (Throwable ignored) {
-        }
-        try {
-            int v = (Integer) getInt.invoke(carData, key, Integer.MIN_VALUE);
-            if (v != Integer.MIN_VALUE) return String.valueOf(v);
-        } catch (Throwable ignored) {
-        }
-        try {
-            String v = (String) getString.invoke(carData, key);
-            if (v != null) return v;
-        } catch (Throwable ignored) {
-        }
-
         return "<missing>";
+    }
+
+    private void addRecent(String row) {
+        recent.addFirst(row);
+        while (recent.size() > 20) recent.removeLast();
+    }
+
+    private String recentText() {
+        StringBuilder sb = new StringBuilder();
+        for (String x : recent) {
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(x);
+        }
+        return sb.toString();
     }
 
     private static String arrayToString(Object array) {
