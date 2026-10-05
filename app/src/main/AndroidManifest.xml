@@ -6,7 +6,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="Peugeot 307 VAN Monitor"
+        android:label="Peugeot 307 CarInfo"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
