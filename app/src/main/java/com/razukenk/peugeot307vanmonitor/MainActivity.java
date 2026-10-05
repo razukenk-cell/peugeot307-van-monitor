@@ -31,19 +31,21 @@ public class MainActivity extends Activity {
 
     private SharedPreferences prefs;
     private final Handler handler = new Handler();
-    private TextView accessibility;
-    private TextView status;
+
+    private CarDoorView carView;
+    private TextView connection;
+    private TextView doorText;
+    private TextView telemetry;
+    private TextView steering;
     private TextView source;
-    private TextView counters;
-    private TextView carState;
-    private TextView keyState;
-    private TextView lastFrame;
+    private TextView raw;
+    private TextView accessibility;
     private CheckBox autostart;
 
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
             updateUi();
-            handler.postDelayed(this, 700);
+            handler.postDelayed(this, 350);
         }
     };
 
@@ -53,96 +55,129 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences("monitor", Context.MODE_PRIVATE);
         buildUi();
         requestNotificationPermissionIfNeeded();
+
+        String tree = prefs.getString("log_tree_uri", "");
+        if (tree != null && !tree.isEmpty()) startMonitor(false);
+
         handler.post(refresh);
     }
 
     private void buildUi() {
         ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(Color.rgb(18, 18, 18));
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(Color.rgb(15, 17, 20));
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(24, 18, 24, 24);
+        root.setPadding(18, 12, 18, 22);
         scroll.addView(root);
 
-        TextView title = text("PEUGEOT 307 VAN MONITOR  v0.2", 24, Color.WHITE);
+        TextView title = text("PEUGEOT 307 CARINFO  v0.3", 24, Color.WHITE);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
 
-        TextView subtitle = text(
-                "Теперь умеет перехватывать коды 2E ... прямо с экрана штатного CANBUS-приложения.\n" +
-                "Сохранение штатного .txt лога больше не обязательно.",
-                15, Color.LTGRAY);
-        subtitle.setPadding(0, 8, 0, 16);
-        root.addView(subtitle);
+        connection = text("CANBUS: ожидание…", 15, Color.LTGRAY);
+        connection.setGravity(Gravity.CENTER_HORIZONTAL);
+        connection.setPadding(0, 4, 0, 8);
+        root.addView(connection);
 
-        accessibility = section(root, "Перехват экрана CANBUS");
-        status = section(root, "Фоновый сервис");
-        source = section(root, "Дополнительный источник .txt (необязательно)");
-        counters = section(root, "Статистика");
-        carState = section(root, "Кандидат состояния автомобиля");
-        keyState = section(root, "Подрулевые кнопки");
-        lastFrame = section(root, "Последний пакет");
+        LinearLayout dash = new LinearLayout(this);
+        dash.setOrientation(LinearLayout.HORIZONTAL);
+        dash.setGravity(Gravity.TOP);
+        root.addView(dash, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        root.addView(button("1. ВКЛЮЧИТЬ ПЕРЕХВАТ CANBUS С ЭКРАНА", v -> {
-            try {
-                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
-                Toast.makeText(this,
-                        "Найдите Peugeot 307 CANBUS screen reader и включите его",
-                        Toast.LENGTH_LONG).show();
-            } catch (Exception e) {
-                Toast.makeText(this, "Не удалось открыть специальные возможности", Toast.LENGTH_LONG).show();
-            }
-        }));
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        dash.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.18f));
 
-        root.addView(button("2. ОЧИСТИТЬ ЗАПИСЬ ПЕРЕД ТЕСТОМ", v -> {
-            MonitorService.clearCapture(this);
-            prefs.edit().putLong("screen_frames", 0).apply();
-            Toast.makeText(this, "Запись очищена. Теперь откройте штатный экран CANBUS.", Toast.LENGTH_SHORT).show();
-        }));
+        carView = new CarDoorView(this);
+        left.addView(carView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 330));
 
-        root.addView(button("3. ЭКСПОРТИРОВАТЬ ДИАГНОСТИКУ", v -> exportDiagnostics()));
+        doorText = text("Все двери закрыты", 18, Color.WHITE);
+        doorText.setGravity(Gravity.CENTER_HORIZONTAL);
+        doorText.setPadding(4, 8, 4, 8);
+        left.addView(doorText);
+
+        LinearLayout right = new LinearLayout(this);
+        right.setOrientation(LinearLayout.VERTICAL);
+        right.setPadding(14, 0, 0, 0);
+        dash.addView(right, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.82f));
+
+        telemetry = card(right, "Данные автомобиля");
+        steering = card(right, "Подрулевой пульт");
+        source = card(right, "Источник данных");
+        accessibility = card(right, "Живой экран");
+        raw = card(right, "RAW статус");
+
+        TextView note = text(
+                "Двери уже расшифрованы по вашему тесту: 08 багажник, 10 ЛЗ, 20 ПЗ, 40 водительская, 80 передняя пассажирская.",
+                13, Color.rgb(160, 170, 180));
+        note.setPadding(2, 8, 2, 10);
+        root.addView(note);
+
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
+        root.addView(controls);
+
+        controls.addView(button("Включить чтение экрана", v -> openAccessibility()),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        controls.addView(button("Выбрать папку логов", v -> chooseFolder()),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        controls.addView(button("Экспорт диагностики", v -> exportDiagnostics()),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         autostart = new CheckBox(this);
-        autostart.setText("Также запускать обычный фоновый монитор после загрузки Android");
+        autostart.setText("Автозапуск CarInfo после включения магнитолы");
         autostart.setTextColor(Color.WHITE);
         autostart.setTextSize(15);
         autostart.setChecked(prefs.getBoolean("autostart_enabled", false));
-        autostart.setOnCheckedChangeListener((buttonView, isChecked) ->
-                prefs.edit().putBoolean("autostart_enabled", isChecked).apply());
+        autostart.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            prefs.edit().putBoolean("autostart_enabled", isChecked).apply();
+            if (isChecked) startMonitor(false);
+        });
         root.addView(autostart);
 
-        root.addView(button("Выбрать папку с сохранёнными .txt логами (необязательно)", v -> chooseFolder()));
-        root.addView(button("Запустить обычный фоновый монитор .txt", v -> startMonitor()));
-        root.addView(button("Остановить обычный монитор .txt", v -> stopMonitor()));
+        LinearLayout testControls = new LinearLayout(this);
+        testControls.setOrientation(LinearLayout.HORIZONTAL);
+        root.addView(testControls);
+
+        testControls.addView(button("Очистить тестовую запись", v -> {
+            MonitorService.clearCapture(this);
+            Toast.makeText(this, "Диагностическая запись очищена", Toast.LENGTH_SHORT).show();
+        }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        testControls.addView(button("Запустить монитор", v -> startMonitor(true)),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        testControls.addView(button("Остановить монитор", v -> stopMonitor()),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView help = text(
-                "\nКАК ТЕСТИРОВАТЬ v0.2:\n" +
-                "1) Нажмите «Включить перехват CANBUS с экрана».\n" +
-                "2) В специальных возможностях включите «Peugeot 307 CANBUS screen reader».\n" +
-                "3) Вернитесь сюда и нажмите «Очистить запись перед тестом».\n" +
-                "4) Откройте штатное CANBUS-приложение магнитолы, где вживую бегут коды 2E ...\n" +
-                "5) Оставьте этот экран открытым во время всего теста. Наша служба работает поверх него в фоне.\n" +
-                "6) 5 сек ничего → водительская дверь → закрыть → пассажирская → закрыть → Volume+ → Volume− → кнопка БК.\n" +
-                "7) Вернитесь в Peugeot 307 VAN Monitor и нажмите «Экспортировать диагностику».\n\n" +
-                "Если счётчик «SCREEN» растёт — прямой перехват работает.\n" +
-                "Служба анализирует только текст, содержащий CANBUS-кадры 2E ...; остальной текст экрана в диагностический файл не сохраняется.",
-                14, Color.LTGRAY);
+                "Для дверей приложение уже умеет рисовать своё отображение — штатная графика магнитолы не нужна. " +
+                "Пока источник — поток RP5 из штатного CANBUS-лога или Accessibility. " +
+                "Температуру, расход, топливо и запас хода будем добавлять только после точного подтверждения байтов: v0.3 уже сохраняет кандидаты B0/B3/B4/B8.",
+                13, Color.LTGRAY);
+        help.setPadding(0, 10, 0, 4);
         root.addView(help);
 
         setContentView(scroll);
     }
 
-    private TextView section(LinearLayout root, String label) {
-        TextView labelView = text(label, 13, Color.rgb(150, 180, 255));
-        labelView.setPadding(0, 10, 0, 2);
-        root.addView(labelView);
+    private TextView card(LinearLayout parent, String label) {
+        TextView l = text(label, 12, Color.rgb(125, 175, 235));
+        l.setPadding(0, 5, 0, 2);
+        parent.addView(l);
 
-        TextView value = text("—", 16, Color.WHITE);
-        value.setPadding(12, 7, 12, 7);
-        value.setBackgroundColor(Color.rgb(35, 35, 35));
-        root.addView(value);
-        return value;
+        TextView v = text("—", 15, Color.WHITE);
+        v.setPadding(10, 8, 10, 8);
+        v.setBackgroundColor(Color.rgb(31, 34, 39));
+        parent.addView(v, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        return v;
     }
 
     private TextView text(String s, int sp, int color) {
@@ -153,16 +188,24 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    private Button button(String text, View.OnClickListener l) {
+    private Button button(String label, View.OnClickListener listener) {
         Button b = new Button(this);
-        b.setText(text);
-        b.setOnClickListener(l);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(0, 8, 0, 0);
-        b.setLayoutParams(lp);
+        b.setText(label);
+        b.setTextSize(13);
+        b.setOnClickListener(listener);
+        b.setMinHeight(52);
         return b;
+    }
+
+    private void openAccessibility() {
+        try {
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            Toast.makeText(this,
+                    "Включите «Peugeot 307 CANBUS screen reader»",
+                    Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "Не удалось открыть специальные возможности", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void chooseFolder() {
@@ -177,6 +220,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+
         if (requestCode == REQ_TREE && resultCode == RESULT_OK && data != null && data.getData() != null) {
             Uri uri = data.getData();
             int flags = data.getFlags() &
@@ -185,18 +229,20 @@ public class MainActivity extends Activity {
                 getContentResolver().takePersistableUriPermission(uri, flags);
             } catch (Exception ignored) {
             }
+
             prefs.edit().putString("log_tree_uri", uri.toString()).apply();
-            Toast.makeText(this, "Папка логов сохранена", Toast.LENGTH_SHORT).show();
-            startMonitor();
+            Toast.makeText(this, "Папка CANBUS сохранена", Toast.LENGTH_SHORT).show();
+            startMonitor(false);
         }
     }
 
-    private void startMonitor() {
-        Intent i = new Intent(this, MonitorService.class);
+    private void startMonitor(boolean toast) {
         try {
+            Intent i = new Intent(this, MonitorService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
             else startService(i);
-            prefs.edit().putString("service_status", "запускается…").apply();
+
+            if (toast) Toast.makeText(this, "Монитор запущен", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
             Toast.makeText(this, "Не удалось запустить: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
@@ -211,7 +257,7 @@ public class MainActivity extends Activity {
         try {
             DiagnosticsExporter.export(this);
             Toast.makeText(this,
-                    "Готово: Downloads/Peugeot307VanMonitor",
+                    "Сохранено: Downloads/Peugeot307VanMonitor",
                     Toast.LENGTH_LONG).show();
         } catch (Exception e) {
             Toast.makeText(this, "Ошибка экспорта: " + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -219,35 +265,44 @@ public class MainActivity extends Activity {
     }
 
     private void updateUi() {
-        accessibility.setText(
-                prefs.getString("accessibility_status", "ещё не включён") +
-                "\nПоследний пакет приложения: " + prefs.getString("screen_package", "—"));
+        int mask = prefs.getInt("door_mask", 0);
+        carView.setDoorMask(mask);
+        doorText.setText(VehicleData.doorsText(mask));
+        doorText.setTextColor(mask == 0 ? Color.rgb(170, 220, 170) : Color.rgb(255, 105, 105));
 
-        String s = prefs.getString("service_status", "обычный .txt монитор остановлен");
-        long lastActivity = prefs.getLong("last_activity_ms", 0);
-        String activity = lastActivity == 0 ? "нет пакетов" :
-                DateFormat.getTimeInstance(DateFormat.MEDIUM).format(new Date(lastActivity));
-        status.setText(s + "\nПоследняя активность: " + activity);
+        long last = prefs.getLong("last_activity_ms", 0);
+        long age = last == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - last;
+        String conn;
+        if (age < 2500) {
+            conn = "CANBUS ● данные идут";
+            connection.setTextColor(Color.rgb(110, 230, 130));
+        } else if (last > 0) {
+            conn = "CANBUS ○ последнее сообщение " +
+                    DateFormat.getTimeInstance(DateFormat.MEDIUM).format(new Date(last));
+            connection.setTextColor(Color.rgb(240, 190, 90));
+        } else {
+            conn = "CANBUS ○ ждём данные";
+            connection.setTextColor(Color.LTGRAY);
+        }
+        connection.setText(conn + "    mask=" + String.format(Locale.US, "0x%02X", mask));
 
-        String tree = prefs.getString("log_tree_uri", "");
+        telemetry.setText(VehicleData.telemetrySummary(prefs));
+
+        steering.setText(
+                "ID: " + prefs.getString("last_key_id", "—") +
+                "\nСостояние: " + prefs.getString("last_key_state", "—"));
+
         String file = prefs.getString("current_file", "");
-        source.setText((tree == null || tree.isEmpty() ? "не используется" : tree) +
-                (file == null || file.isEmpty() ? "" : "\nФайл: " + file));
+        String service = prefs.getString("service_status", "остановлен");
+        source.setText(service +
+                (file == null || file.isEmpty() ? "\nФайл: —" : "\nФайл: " + file));
 
-        counters.setText(String.format(Locale.US,
-                "Изменений/событий: %d   SCREEN: %d   checksum BAD: %d",
-                prefs.getLong("frames_total", 0),
-                prefs.getLong("screen_frames", 0),
-                prefs.getLong("frames_bad", 0)));
+        accessibility.setText(
+                prefs.getString("accessibility_status", "не включён") +
+                "\nSCREEN кадров: " + prefs.getLong("screen_frames", 0) +
+                "\nПакет: " + prefs.getString("screen_package", "—"));
 
-        carState.setText("mask candidate: " + prefs.getString("vehicle_mask", "—") +
-                "\npayload: " + prefs.getString("vehicle_payload", "—"));
-
-        keyState.setText("ID: " + prefs.getString("last_key_id", "—") +
-                "   state: " + prefs.getString("last_key_state", "—"));
-
-        lastFrame.setText(prefs.getString("last_direction", "") + " " +
-                prefs.getString("last_frame", "—"));
+        raw.setText(VehicleData.rawStatusBytes(prefs));
     }
 
     private void requestNotificationPermissionIfNeeded() {
