@@ -36,6 +36,7 @@ public class MainActivity extends Activity {
     private TextView connection;
     private TextView doorText;
     private TextView telemetry;
+    private TextView direct;
     private TextView steering;
     private TextView source;
     private TextView raw;
@@ -70,7 +71,7 @@ public class MainActivity extends Activity {
         root.setPadding(18, 10, 18, 20);
         scroll.addView(root);
 
-        TextView title = text("PEUGEOT 307 CARINFO  v0.5", 24, Color.WHITE);
+        TextView title = text("PEUGEOT 307 CARINFO  v0.6", 24, Color.WHITE);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
 
@@ -100,6 +101,7 @@ public class MainActivity extends Activity {
         right.setPadding(12, 0, 0, 0);
         dash.addView(right, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.85f));
 
+        direct = card(right, "DIRECT CarData");
         telemetry = card(right, "Данные / кандидаты");
         steering = card(right, "Подрулевой пульт");
         source = card(right, "Источник");
@@ -157,10 +159,10 @@ public class MainActivity extends Activity {
         }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView help = text(
-                "v0.4 решает текущую проблему двумя способами:\n" +
-                "1) пока штатный CANBUS-лог открыт, CarInfo рисует своё маленькое окно поверх него и показывает двери/кнопки;\n" +
-                "2) «НАЙТИ И СКОПИРОВАТЬ CANBUS APK» ищет штатное CANBUS/MCU-приложение и копирует найденные APK прямо в память магнитолы. " +
-                "Никаких команд в VAN/CAN эта версия не передаёт.",
+                "v0.6 сначала пытается подключиться прямо к системному android.cartech.cardata.CarData. " +
+                "Если DIRECT станет «ПОДКЛЮЧЕНО», штатный CANBUS-лог открывать больше не нужно.\n" +
+                "Плавающее окно теперь создаётся через Accessibility overlay, чтобы быть выше штатного окна лога. " +
+                "Никаких команд в VAN/CAN приложение не передаёт.",
                 13, Color.LTGRAY);
         help.setPadding(0, 8, 0, 2);
         root.addView(help);
@@ -337,6 +339,13 @@ public class MainActivity extends Activity {
             connection.setText("CANBUS ○ ждём штатный лог/экран");
             connection.setTextColor(Color.LTGRAY);
         }
+
+        direct.setText(
+                prefs.getString("direct_status", "проверка…") +
+                "\nListener: " + prefs.getString("direct_listener", "—") +
+                "\nКлючей: " + prefs.getInt("direct_key_count", 0) +
+                "\nПоследнее: " + prefs.getString("direct_last_key", "—") +
+                " = " + prefs.getString("direct_last_value", "—"));
 
         telemetry.setText(VehicleData.telemetrySummary(prefs));
 
