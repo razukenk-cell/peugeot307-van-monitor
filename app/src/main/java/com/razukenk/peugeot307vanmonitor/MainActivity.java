@@ -219,6 +219,7 @@ public class MainActivity extends Activity {
         try {
             Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                     Uri.parse("package:" + getPackageName()));
+            prefs.edit().putBoolean("overlay_pending", true).apply();
             startActivity(intent);
             Toast.makeText(this, "Разрешите «Показывать поверх других приложений», затем вернитесь", Toast.LENGTH_LONG).show();
         } catch (Exception e) {
@@ -230,7 +231,13 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)) {
-            if (prefs.getBoolean("overlay_enabled", false)) overlay.setChecked(true);
+            if (prefs.getBoolean("overlay_pending", false)) {
+                prefs.edit().putBoolean("overlay_pending", false).putBoolean("overlay_enabled", true).apply();
+            }
+            if (prefs.getBoolean("overlay_enabled", false) && overlay != null) {
+                overlay.setChecked(true);
+                startMonitor(false);
+            }
         }
     }
 
