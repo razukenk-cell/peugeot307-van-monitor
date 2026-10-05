@@ -26,7 +26,7 @@ final class DiagnosticsExporter {
         String filename = "peugeot307_diagnostic_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 VAN Monitor diagnostic\n");
+        report.append("Peugeot 307 VAN Monitor diagnostic v0.2\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
@@ -40,9 +40,12 @@ final class DiagnosticsExporter {
 
         report.append("[MONITOR]\n");
         report.append("Service: ").append(p.getString("service_status", "unknown")).append("\n");
+        report.append("Accessibility capture: ").append(p.getString("accessibility_status", "unknown")).append("\n");
+        report.append("Last source package: ").append(p.getString("screen_package", "(none)")).append("\n");
         report.append("Source folder: ").append(p.getString("log_tree_uri", "(not selected)")).append("\n");
         report.append("Current file: ").append(p.getString("current_file", "(none)")).append("\n");
         report.append("Frames total: ").append(p.getLong("frames_total", 0)).append("\n");
+        report.append("Screen frames: ").append(p.getLong("screen_frames", 0)).append("\n");
         report.append("Checksum errors: ").append(p.getLong("frames_bad", 0)).append("\n");
         report.append("Last frame: ").append(p.getString("last_frame", "(none)")).append("\n");
         report.append("Last direction: ").append(p.getString("last_direction", "(none)")).append("\n");
