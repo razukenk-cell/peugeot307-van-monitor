@@ -7,9 +7,19 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Color;
+import android.graphics.PixelFormat;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
+import android.provider.Settings;
+import android.view.Gravity;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import androidx.documentfile.provider.DocumentFile;
 
@@ -38,6 +48,22 @@ public class MonitorService extends Service {
     private int processedLines = 0;
     private String lastVehiclePayload = "";
 
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private WindowManager windowManager;
+    private View overlayView;
+    private CarDoorView overlayCar;
+    private TextView overlayText;
+
+    private final Runnable overlayTick = new Runnable() {
+        @Override public void run() {
+            try {
+                updateOverlay();
+            } catch (Throwable ignored) {
+            }
+            mainHandler.postDelayed(this, 250);
+        }
+    };
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -48,6 +74,8 @@ public class MonitorService extends Service {
 
         executor = Executors.newSingleThreadScheduledExecutor();
         executor.scheduleWithFixedDelay(this::pollSafely, 0, 650, TimeUnit.MILLISECONDS);
+
+        mainHandler.post(overlayTick);
     }
 
     @Override
@@ -77,14 +105,14 @@ public class MonitorService extends Service {
     private void poll() throws Exception {
         String tree = prefs.getString("log_tree_uri", "");
         if (tree == null || tree.isEmpty()) {
-            prefs.edit().putString("service_status", "работает; папка логов не выбрана").apply();
+            prefs.edit().putString("service_status", "работает; ждёт живой экран CANBUS").apply();
             return;
         }
 
         Uri treeUri = Uri.parse(tree);
         DocumentFile root = DocumentFile.fromTreeUri(this, treeUri);
         if (root == null || !root.exists() || !root.isDirectory()) {
-            prefs.edit().putString("service_status", "нет доступа к выбранной папке").apply();
+            prefs.edit().putString("service_status", "работает; нет доступа к папке логов").apply();
             return;
         }
 
@@ -102,7 +130,7 @@ public class MonitorService extends Service {
         }
 
         if (newest == null) {
-            prefs.edit().putString("service_status", "работает; ждёт .txt от штатного CANBUS").apply();
+            prefs.edit().putString("service_status", "работает; ждёт CANBUS").apply();
             return;
         }
 
@@ -114,9 +142,11 @@ public class MonitorService extends Service {
 
         int lineNo = 0;
         int newFrames = 0;
-        try (InputStream in = getContentResolver().openInputStream(newest.getUri());
+        InputStream input = getContentResolver().openInputStream(newest.getUri());
+        if (input == null) throw new IllegalStateException("openInputStream returned null");
+
+        try (InputStream in = input;
              BufferedReader br = new BufferedReader(new InputStreamReader(in))) {
-            if (in == null) throw new IllegalStateException("openInputStream returned null");
             String line;
             while ((line = br.readLine()) != null) {
                 lineNo++;
@@ -130,16 +160,12 @@ public class MonitorService extends Service {
             }
         }
 
-        // If the stock logger truncated/restarted the same file, start from its new beginning next pass.
-        if (lineNo < processedLines) {
-            processedLines = 0;
-        } else {
-            processedLines = lineNo;
-        }
+        if (lineNo < processedLines) processedLines = 0;
+        else processedLines = lineNo;
 
         SharedPreferences.Editor e = prefs.edit()
                 .putString("current_file", newest.getName() == null ? newestUri : newest.getName())
-                .putString("service_status", "работает; читает штатный лог");
+                .putString("service_status", "работает; читает CANBUS");
         if (newFrames > 0) e.putLong("last_activity_ms", System.currentTimeMillis());
         e.apply();
     }
@@ -162,8 +188,10 @@ public class MonitorService extends Service {
             int keyId = frame.unsigned(0);
             int state = frame.unsigned(1);
             e.putString("last_key_id", String.format(Locale.US, "0x%02X", keyId));
+            e.putString("last_key_name", VehicleData.keyName(keyId));
             e.putString("last_key_state", keyStateName(state));
-            annotation = "KEY id=" + String.format(Locale.US, "0x%02X", keyId) +
+            annotation = "KEY " + VehicleData.keyName(keyId) +
+                    " id=" + String.format(Locale.US, "0x%02X", keyId) +
                     " state=" + keyStateName(state);
             capture = true;
         } else if (frame.command == 0x01) {
@@ -175,6 +203,10 @@ public class MonitorService extends Service {
                 capture = true;
                 lastVehiclePayload = payload;
             }
+        } else if (frame.command == 0xC8) {
+            VehicleData.applyClockFrame(e, frame);
+            annotation = "CLOCK";
+            capture = true;
         } else {
             annotation = "CMD=" + String.format(Locale.US, "0x%02X", frame.command);
             capture = true;
@@ -197,12 +229,110 @@ public class MonitorService extends Service {
         }
     }
 
+    private void updateOverlay() {
+        boolean enabled = prefs.getBoolean("overlay_enabled", false);
+        boolean permitted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this);
+
+        if (!enabled || !permitted) {
+            removeOverlay();
+            return;
+        }
+
+        if (overlayView == null) createOverlay();
+
+        int mask = prefs.getInt("door_mask", 0);
+        if (overlayCar != null) overlayCar.setDoorMask(mask);
+
+        if (overlayText != null) {
+            int keyId = parseHexId(prefs.getString("last_key_id", ""));
+            String key = keyId >= 0 ? VehicleData.keyName(keyId) : "—";
+            int hour = prefs.getInt("box_hour", -1);
+            int minute = prefs.getInt("box_minute", -1);
+            String clock = hour >= 0 && minute >= 0
+                    ? String.format(Locale.US, "%02d:%02d", hour, minute) : "—";
+            overlayText.setText(VehicleData.doorsText(mask) +
+                    "\nКнопка: " + key +
+                    "\nВремя CAN: " + clock);
+            overlayText.setTextColor(mask == 0 ? Color.LTGRAY : Color.rgb(255, 105, 105));
+        }
+    }
+
+    private int parseHexId(String s) {
+        if (s == null) return -1;
+        try {
+            String x = s.trim().toLowerCase(Locale.US);
+            if (x.startsWith("0x")) x = x.substring(2);
+            return Integer.parseInt(x, 16);
+        } catch (Exception ignored) {
+            return -1;
+        }
+    }
+
+    private void createOverlay() {
+        if (windowManager == null) windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(8, 6, 8, 6);
+        box.setBackgroundColor(Color.argb(225, 15, 17, 20));
+
+        TextView title = new TextView(this);
+        title.setText("PEUGEOT 307");
+        title.setTextSize(15);
+        title.setTextColor(Color.WHITE);
+        title.setGravity(Gravity.CENTER);
+        box.addView(title, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        overlayCar = new CarDoorView(this);
+        box.addView(overlayCar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 185));
+
+        overlayText = new TextView(this);
+        overlayText.setTextSize(13);
+        overlayText.setTextColor(Color.LTGRAY);
+        overlayText.setGravity(Gravity.CENTER);
+        box.addView(overlayText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                : WindowManager.LayoutParams.TYPE_PHONE;
+
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                300,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE |
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.TOP | Gravity.END;
+        lp.x = 8;
+        lp.y = 70;
+
+        windowManager.addView(box, lp);
+        overlayView = box;
+    }
+
+    private void removeOverlay() {
+        if (overlayView != null && windowManager != null) {
+            try {
+                windowManager.removeView(overlayView);
+            } catch (Throwable ignored) {
+            }
+        }
+        overlayView = null;
+        overlayCar = null;
+        overlayText = null;
+    }
+
     private synchronized void appendCapture(String text) {
         try {
             File capture = new File(getFilesDir(), "capture.log");
             boolean append = capture.exists() && capture.length() < MAX_CAPTURE_BYTES;
             try (FileWriter w = new FileWriter(capture, append)) {
-                if (!append) w.write("# Peugeot 307 CarInfo capture v0.3\n");
+                if (!append) w.write("# Peugeot 307 CarInfo capture v0.4\n");
                 String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
                 w.write(ts + " " + text + "\n");
             }
@@ -221,12 +351,16 @@ public class MonitorService extends Service {
                 .remove("last_frame")
                 .remove("last_command")
                 .remove("last_key_id")
+                .remove("last_key_name")
                 .remove("last_key_state")
                 .remove("vehicle_mask")
                 .remove("vehicle_payload")
                 .remove("telemetry_last_ms");
 
-        for (int i = 0; i < 13; i++) e.remove("status_b" + i);
+        for (int i = 0; i < 13; i++) {
+            e.remove("status_b" + i);
+            e.remove("current_status_b" + i);
+        }
         e.apply();
     }
 
@@ -266,6 +400,8 @@ public class MonitorService extends Service {
     public void onDestroy() {
         prefs.edit().putString("service_status", "остановлен").apply();
         if (executor != null) executor.shutdownNow();
+        mainHandler.removeCallbacks(overlayTick);
+        removeOverlay();
         super.onDestroy();
     }
 
