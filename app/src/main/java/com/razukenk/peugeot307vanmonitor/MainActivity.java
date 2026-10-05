@@ -70,7 +70,7 @@ public class MainActivity extends Activity {
         root.setPadding(18, 10, 18, 20);
         scroll.addView(root);
 
-        TextView title = text("PEUGEOT 307 CARINFO  v0.4", 24, Color.WHITE);
+        TextView title = text("PEUGEOT 307 CARINFO  v0.5", 24, Color.WHITE);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
 
@@ -149,8 +149,8 @@ public class MainActivity extends Activity {
 
         row2.addView(button("Экспорт лога", v -> exportDiagnostics()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row2.addView(button("СИСТЕМНЫЙ PROBE + APK", v -> exportSystemProbe()),
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row2.addView(button("НАЙТИ И СКОПИРОВАТЬ CANBUS APK", v -> exportCanbusApk()),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f));
         row2.addView(button("Очистить", v -> {
             MonitorService.clearCapture(this);
             Toast.makeText(this, "Запись очищена", Toast.LENGTH_SHORT).show();
@@ -159,7 +159,7 @@ public class MainActivity extends Activity {
         TextView help = text(
                 "v0.4 решает текущую проблему двумя способами:\n" +
                 "1) пока штатный CANBUS-лог открыт, CarInfo рисует своё маленькое окно поверх него и показывает двери/кнопки;\n" +
-                "2) «СИСТЕМНЫЙ PROBE + APK» пытается найти штатное CANBUS/MCU-приложение и сохранить его APK для анализа прямого канала RP5 → Android. " +
+                "2) «НАЙТИ И СКОПИРОВАТЬ CANBUS APK» ищет штатное CANBUS/MCU-приложение и копирует найденные APK прямо в память магнитолы. " +
                 "Никаких команд в VAN/CAN эта версия не передаёт.",
                 13, Color.LTGRAY);
         help.setPadding(0, 8, 0, 2);
@@ -285,6 +285,22 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             Toast.makeText(this, "Ошибка экспорта: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void exportCanbusApk() {
+        Toast.makeText(this, "Ищу штатное CANBUS/MCU-приложение…", Toast.LENGTH_LONG).show();
+        new Thread(() -> {
+            try {
+                CanbusApkExporter.Result result = CanbusApkExporter.findAndCopy(this);
+                runOnUiThread(() -> Toast.makeText(this,
+                        result.details,
+                        Toast.LENGTH_LONG).show());
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Ошибка копирования CANBUS APK: " + e.getMessage(),
+                        Toast.LENGTH_LONG).show());
+            }
+        }).start();
     }
 
     private void exportSystemProbe() {
