@@ -23,10 +23,10 @@ final class DiagnosticsExporter {
     static Uri export(Context context) throws Exception {
         SharedPreferences p = context.getSharedPreferences("monitor", Context.MODE_PRIVATE);
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String filename = "peugeot307_diagnostic_v08_" + stamp + ".txt";
+        String filename = "peugeot307_diagnostic_v09_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 CarInfo diagnostic v0.8\n");
+        report.append("Peugeot 307 CarInfo diagnostic v0.9\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
@@ -95,6 +95,17 @@ final class DiagnosticsExporter {
         File capture = new File(context.getFilesDir(), "capture.log");
         if (capture.exists()) {
             try (BufferedReader br = new BufferedReader(new FileReader(capture))) {
+                String line;
+                while ((line = br.readLine()) != null) report.append(line).append('\n');
+            }
+        } else {
+            report.append("(empty)\n");
+        }
+
+        report.append("\n[STOCK ACCESSIBILITY TREE]\n");
+        File tree = new File(context.getFilesDir(), "stock_accessibility_tree.log");
+        if (tree.exists()) {
+            try (BufferedReader br = new BufferedReader(new FileReader(tree))) {
                 String line;
                 while ((line = br.readLine()) != null) report.append(line).append('\n');
             }
