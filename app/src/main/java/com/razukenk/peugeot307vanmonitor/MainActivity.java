@@ -77,7 +77,7 @@ public class MainActivity extends Activity {
         root.setPadding(18, 10, 18, 20);
         scroll.addView(root);
 
-        TextView title = text("PEUGEOT 307 CARINFO  v0.8", 24, Color.WHITE);
+        TextView title = text("PEUGEOT 307 CARINFO  v0.9", 24, Color.WHITE);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
 
@@ -156,10 +156,10 @@ public class MainActivity extends Activity {
         }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView help = text(
-                "v0.8 больше не требует вручную открывать экран LOG. Кнопка AUTO CANBUS сама запускает " +
-                "экспортированный штатный Canbus Debug Tool, пытается включить Capture и держит его " +
-                "под полноэкранным интерфейсом CarInfo. Штатный процесс остаётся единственным владельцем " +
-                "/dev/ttyCanbus, поэтому подрулевые кнопки и CAN-box не перехватываются вторым UART-reader.\n\n" +
+                "v0.9 сама запускает штатный Canbus Debug Tool и теперь ищет именно Compose Switch Capture, " +
+                "а не текстовую надпись. Пока RAW-поток ещё не пошёл, CarInfo НЕ закрывает штатный экран; " +
+                "как только появляются кадры 2E..., поверх автоматически появляется наш интерфейс. " +
+                "Штатный процесс остаётся единственным владельцем /dev/ttyCanbus.\n\n" +
                 "Важно: один раз должна быть включена служба «Peugeot 307 CANBUS screen reader» в " +
                 "Специальных возможностях. Это read-only мост — CarInfo не отправляет пакеты в VAN/CAN.",
                 13, Color.LTGRAY);
