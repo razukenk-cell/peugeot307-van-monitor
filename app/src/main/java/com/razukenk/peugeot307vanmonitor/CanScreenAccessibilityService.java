@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
@@ -40,6 +41,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
     private long lastStockWindowSeenMs = 0;
     private long lastBridgeLaunchAttemptMs = 0;
     private long lastCaptureAttemptMs = 0;
+    private long lastTreeDumpMs = 0;
 
     private WindowManager windowManager;
     private View overlayView;
@@ -221,57 +223,199 @@ public class CanScreenAccessibilityService extends AccessibilityService {
     private void tryEnableCapture(AccessibilityNodeInfo root) {
         long now = System.currentTimeMillis();
         if (lastFrameSeenMs > 0 && now - lastFrameSeenMs < 1500) return;
-        if (now - lastCaptureAttemptMs < 2800) return;
-
-        AccessibilityNodeInfo candidate = findCaptureNode(root);
-        if (candidate == null) return;
+        if (now - lastCaptureAttemptMs < 1800) return;
 
         lastCaptureAttemptMs = now;
+        dumpAccessibilityTree(root);
+
+        AccessibilityNodeInfo candidate = findBestCaptureToggle(root);
         boolean clicked = false;
-        AccessibilityNodeInfo cur = candidate;
+        String details = "не найден";
 
-        for (int i = 0; i < 5 && cur != null; i++) {
-            if (cur.isClickable()) {
-                clicked = cur.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                break;
+        if (candidate != null) {
+            try {
+                details = describeNode(candidate);
+
+                if (candidate.isCheckable() && candidate.isChecked()) {
+                    clicked = true;
+                    details += " (уже включён)";
+                } else {
+                    clicked = candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    if (!clicked) {
+                        AccessibilityNodeInfo parent = candidate.getParent();
+                        for (int i = 0; i < 4 && parent != null && !clicked; i++) {
+                            if (parent.isClickable()) {
+                                clicked = parent.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                                details += " parentClick=" + clicked;
+                                break;
+                            }
+                            AccessibilityNodeInfo next = parent.getParent();
+                            parent.recycle();
+                            parent = next;
+                        }
+                        if (parent != null) parent.recycle();
+                    }
+                }
+            } finally {
+                candidate.recycle();
             }
-            AccessibilityNodeInfo parent = cur.getParent();
-            if (cur != candidate) cur.recycle();
-            cur = parent;
         }
-
-        if (cur != null && cur != candidate) cur.recycle();
-        candidate.recycle();
 
         prefs.edit()
                 .putString("bridge_capture_status",
-                        clicked ? "Capture включён автоматически" :
-                                "Найден Capture, но автоклик не сработал")
+                        clicked ? "Capture/Switch включён автоматически: " + details :
+                                "Автоклик пока не сработал: " + details)
                 .apply();
     }
 
-    private AccessibilityNodeInfo findCaptureNode(AccessibilityNodeInfo node) {
+    private AccessibilityNodeInfo findBestCaptureToggle(AccessibilityNodeInfo root) {
+        if (root == null) return null;
+
+        // Compose Switch обычно не содержит текст "Capture", зато публикуется как
+        // checkable/clickable accessibility node. В штатном DebugActivity это
+        // первый и основной toggle после надписи "Capture:".
+        AccessibilityNodeInfo checkable = findFirstCheckable(root);
+        if (checkable != null) return checkable;
+
+        AccessibilityNodeInfo label = findTextNode(root, "capture");
+        if (label != null) {
+            try {
+                AccessibilityNodeInfo parent = label.getParent();
+                for (int level = 0; level < 5 && parent != null; level++) {
+                    AccessibilityNodeInfo inside = findFirstInteractive(parent, label);
+                    if (inside != null) {
+                        if (parent != label) parent.recycle();
+                        return inside;
+                    }
+
+                    AccessibilityNodeInfo next = parent.getParent();
+                    parent.recycle();
+                    parent = next;
+                }
+
+                if (label.isClickable()) return AccessibilityNodeInfo.obtain(label);
+            } finally {
+                label.recycle();
+            }
+        }
+
+        return findFirstInteractive(root, null);
+    }
+
+    private AccessibilityNodeInfo findFirstCheckable(AccessibilityNodeInfo node) {
         if (node == null) return null;
 
-        String joined = "";
-        CharSequence t = node.getText();
-        CharSequence d = node.getContentDescription();
-        if (t != null) joined += t.toString();
-        if (d != null) joined += " " + d.toString();
+        CharSequence cls = node.getClassName();
+        String className = cls == null ? "" : cls.toString().toLowerCase(Locale.US);
 
-        if (joined.toLowerCase(Locale.US).contains("capture")) {
+        if ((node.isCheckable() || className.contains("switch") || className.contains("checkbox"))
+                && node.isEnabled()) {
             return AccessibilityNodeInfo.obtain(node);
         }
 
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child != null) {
-                AccessibilityNodeInfo found = findCaptureNode(child);
+                AccessibilityNodeInfo found = findFirstCheckable(child);
                 child.recycle();
                 if (found != null) return found;
             }
         }
         return null;
+    }
+
+    private AccessibilityNodeInfo findTextNode(AccessibilityNodeInfo node, String needle) {
+        if (node == null) return null;
+
+        StringBuilder joined = new StringBuilder();
+        CharSequence t = node.getText();
+        CharSequence d = node.getContentDescription();
+        if (t != null) joined.append(t);
+        if (d != null) joined.append(' ').append(d);
+
+        if (joined.toString().toLowerCase(Locale.US).contains(needle)) {
+            return AccessibilityNodeInfo.obtain(node);
+        }
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                AccessibilityNodeInfo found = findTextNode(child, needle);
+                child.recycle();
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private AccessibilityNodeInfo findFirstInteractive(
+            AccessibilityNodeInfo node, AccessibilityNodeInfo exclude) {
+        if (node == null) return null;
+
+        boolean excluded = exclude != null && node.equals(exclude);
+        if (!excluded && node.isEnabled() && (node.isCheckable() || node.isClickable())) {
+            return AccessibilityNodeInfo.obtain(node);
+        }
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                AccessibilityNodeInfo found = findFirstInteractive(child, exclude);
+                child.recycle();
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private String describeNode(AccessibilityNodeInfo node) {
+        if (node == null) return "null";
+        Rect r = new Rect();
+        node.getBoundsInScreen(r);
+        return "class=" + String.valueOf(node.getClassName()) +
+                " text=" + String.valueOf(node.getText()) +
+                " desc=" + String.valueOf(node.getContentDescription()) +
+                " clickable=" + node.isClickable() +
+                " checkable=" + node.isCheckable() +
+                " checked=" + node.isChecked() +
+                " bounds=" + r.toShortString();
+    }
+
+    private void dumpAccessibilityTree(AccessibilityNodeInfo root) {
+        long now = System.currentTimeMillis();
+        if (now - lastTreeDumpMs < 3000) return;
+        lastTreeDumpMs = now;
+
+        try {
+            File file = new File(getFilesDir(), "stock_accessibility_tree.log");
+            try (FileWriter w = new FileWriter(file, false)) {
+                w.write("# Peugeot 307 stock CANBUS accessibility tree v0.9\n");
+                dumpNode(w, root, 0);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void dumpNode(FileWriter w, AccessibilityNodeInfo node, int depth) throws Exception {
+        if (node == null || depth > 30) return;
+
+        Rect r = new Rect();
+        node.getBoundsInScreen(r);
+
+        for (int i = 0; i < depth; i++) w.write("  ");
+        w.write(describeNode(node) +
+                " children=" + node.getChildCount() + "\n");
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                try {
+                    dumpNode(w, child, depth + 1);
+                } finally {
+                    child.recycle();
+                }
+            }
+        }
     }
 
     private void maintainBridge() {
@@ -360,6 +504,19 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             return;
         }
 
+        long age = lastFrameSeenMs == 0 ? Long.MAX_VALUE :
+                System.currentTimeMillis() - lastFrameSeenMs;
+
+        // Пока Capture ещё не включён, НЕ закрываем штатный DebugActivity.
+        // Это даёт Accessibility доступ к Compose Switch и одновременно
+        // оставляет ручной fallback: если автоклик не сработает, пользователь
+        // увидит штатный экран и сможет один раз переключить Capture.
+        if (age >= 1800) {
+            removeOverlay();
+            prefs.edit().putBoolean("accessibility_overlay_active", false).apply();
+            return;
+        }
+
         if (overlayView == null) {
             try {
                 createFullScreenOverlay();
@@ -377,9 +534,6 @@ public class CanScreenAccessibilityService extends AccessibilityService {
 
         int mask = prefs.getInt("door_mask", 0);
         if (overlayCar != null) overlayCar.setDoorMask(mask);
-
-        long age = lastFrameSeenMs == 0 ? Long.MAX_VALUE :
-                System.currentTimeMillis() - lastFrameSeenMs;
 
         if (overlayStatus != null) {
             String status = age < 1200
@@ -440,7 +594,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
         TextView title = new TextView(this);
-        title.setText("PEUGEOT 307 CARINFO  AUTO");
+        title.setText("PEUGEOT 307 CARINFO  AUTO v0.9");
         title.setTextColor(Color.WHITE);
         title.setTextSize(24);
         top.addView(title, new LinearLayout.LayoutParams(
@@ -586,7 +740,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             File capture = new File(getFilesDir(), "capture.log");
             boolean append = capture.exists() && capture.length() < 2L * 1024L * 1024L;
             try (FileWriter w = new FileWriter(capture, append)) {
-                if (!append) w.write("# Peugeot 307 CarInfo bridge capture v0.8\n");
+                if (!append) w.write("# Peugeot 307 CarInfo bridge capture v0.9\n");
                 String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
                         .format(new Date());
                 w.write(ts + " " + text + "\n");
