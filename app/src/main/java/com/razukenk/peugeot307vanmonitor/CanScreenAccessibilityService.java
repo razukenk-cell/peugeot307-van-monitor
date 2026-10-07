@@ -56,7 +56,6 @@ public class CanScreenAccessibilityService extends AccessibilityService {
         @Override public void run() {
             try {
                 scanCanbusWindows();
-                maintainBridge();
                 updateBridgeOverlay();
             } catch (Throwable t) {
                 if (prefs != null) {
@@ -74,8 +73,12 @@ public class CanScreenAccessibilityService extends AccessibilityService {
         super.onServiceConnected();
         prefs = getSharedPreferences("monitor", Context.MODE_PRIVATE);
         prefs.edit()
-                .putString("accessibility_status", "включён")
+                .putString("accessibility_status", "включён; v0.10 PASSIVE ONLY")
                 .putBoolean("accessibility_overlay_active", false)
+                .putBoolean("bridge_enabled", false)
+                .putBoolean("bridge_pending", false)
+                .putString("bridge_status", "v0.10 SAFE: Accessibility только наблюдает, без кликов")
+                .putString("bridge_capture_status", "v0.10 SAFE: ACTION_CLICK запрещён")
                 .apply();
         handler.removeCallbacks(pollRunnable);
         handler.post(pollRunnable);
@@ -118,14 +121,6 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                             stockFound = true;
                             lastStockWindowSeenMs = System.currentTimeMillis();
                             scanNode(root);
-
-                            if (prefs.getBoolean("bridge_enabled", false) &&
-                                    lastFrameSeenMs < prefs.getLong("bridge_launch_ms", 0) &&
-                                    System.currentTimeMillis() -
-                                            prefs.getLong("bridge_launch_ms", 0) >
-                                            AUTO_CAPTURE_DELAY_MS) {
-                                tryEnableCapture(root);
-                            }
                         }
                     } finally {
                         if (root != null) root.recycle();
@@ -147,9 +142,6 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                         if (StockCanbusBridge.STOCK_PACKAGE.equals(packageName)) {
                             lastStockWindowSeenMs = System.currentTimeMillis();
                             scanNode(root);
-                            if (prefs.getBoolean("bridge_enabled", false)) {
-                                tryEnableCapture(root);
-                            }
                         }
                     }
                 } finally {
@@ -221,51 +213,11 @@ public class CanScreenAccessibilityService extends AccessibilityService {
     }
 
     private void tryEnableCapture(AccessibilityNodeInfo root) {
-        long now = System.currentTimeMillis();
-        if (lastFrameSeenMs > 0 && now - lastFrameSeenMs < 1500) return;
-        if (now - lastCaptureAttemptMs < 1800) return;
-
-        lastCaptureAttemptMs = now;
-        dumpAccessibilityTree(root);
-
-        AccessibilityNodeInfo candidate = findBestCaptureToggle(root);
-        boolean clicked = false;
-        String details = "не найден";
-
-        if (candidate != null) {
-            try {
-                details = describeNode(candidate);
-
-                if (candidate.isCheckable() && candidate.isChecked()) {
-                    clicked = true;
-                    details += " (уже включён)";
-                } else {
-                    clicked = candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                    if (!clicked) {
-                        AccessibilityNodeInfo parent = candidate.getParent();
-                        for (int i = 0; i < 4 && parent != null && !clicked; i++) {
-                            if (parent.isClickable()) {
-                                clicked = parent.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                                details += " parentClick=" + clicked;
-                                break;
-                            }
-                            AccessibilityNodeInfo next = parent.getParent();
-                            parent.recycle();
-                            parent = next;
-                        }
-                        if (parent != null) parent.recycle();
-                    }
-                }
-            } finally {
-                candidate.recycle();
-            }
+        // v0.10 SAFETY: deliberately no ACTION_CLICK of any Accessibility node.
+        if (prefs != null) {
+            prefs.edit().putString("bridge_capture_status",
+                    "v0.10 SAFE: автоклик отключён; ACTION_CLICK не выполняется").apply();
         }
-
-        prefs.edit()
-                .putString("bridge_capture_status",
-                        clicked ? "Capture/Switch включён автоматически: " + details :
-                                "Автоклик пока не сработал: " + details)
-                .apply();
     }
 
     private AccessibilityNodeInfo findBestCaptureToggle(AccessibilityNodeInfo root) {
@@ -389,7 +341,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
         try {
             File file = new File(getFilesDir(), "stock_accessibility_tree.log");
             try (FileWriter w = new FileWriter(file, false)) {
-                w.write("# Peugeot 307 stock CANBUS accessibility tree v0.9\n");
+                w.write("# Peugeot 307 stock CANBUS accessibility tree v0.10 SAFE\n");
                 dumpNode(w, root, 0);
             }
         } catch (Throwable ignored) {
@@ -419,79 +371,10 @@ public class CanScreenAccessibilityService extends AccessibilityService {
     }
 
     private void maintainBridge() {
-        if (!prefs.getBoolean("bridge_enabled", false)) return;
-
-        long now = System.currentTimeMillis();
-        boolean stockAlive = now - lastStockWindowSeenMs < 1200;
-
-        if (!stockAlive && now - lastBridgeLaunchAttemptMs > RELAUNCH_DELAY_MS) {
-            lastBridgeLaunchAttemptMs = now;
-            StockCanbusBridge.launch(this);
+        // v0.10 SAFETY: no automatic launch or re-launch of stock DebugActivity.
+        if (prefs != null && prefs.getBoolean("bridge_enabled", false)) {
+            StockCanbusBridge.disable(this);
         }
-    }
-
-    private synchronized void recordFrame(FrameParser.Frame frame) {
-        lastFrameSeenMs = System.currentTimeMillis();
-
-        boolean meaningful = false;
-        String annotation = "";
-
-        if (frame.command == 0x20 && frame.data.length >= 2) {
-            int keyId = frame.unsigned(0);
-            int state = frame.unsigned(1);
-            Integer previous = lastKeyStates.get(keyId);
-            if (previous == null || previous != state) {
-                lastKeyStates.put(keyId, state);
-                meaningful = true;
-                annotation = "BRIDGE KEY " + VehicleData.keyName(keyId) +
-                        " id=" + hex(keyId) + " state=" + keyStateName(state);
-            }
-        } else if (frame.command == 0x01) {
-            String payload = frame.payloadHex();
-            if (!payload.equals(lastVehiclePayload)) {
-                lastVehiclePayload = payload;
-                meaningful = true;
-                annotation = "BRIDGE VEHICLE_STATUS changed";
-            }
-        } else if (frame.command == 0xC8) {
-            meaningful = true;
-            annotation = "BRIDGE CLOCK";
-        } else if (!frame.hex.equals(lastOtherFrame)) {
-            lastOtherFrame = frame.hex;
-            meaningful = true;
-            annotation = "BRIDGE CMD=" + hex(frame.command);
-        }
-
-        if (!meaningful) return;
-
-        long total = prefs.getLong("frames_total", 0) + 1;
-        long screen = prefs.getLong("screen_frames", 0) + 1;
-        long bad = prefs.getLong("frames_bad", 0) + (frame.checksumOk ? 0 : 1);
-
-        SharedPreferences.Editor e = prefs.edit()
-                .putLong("frames_total", total)
-                .putLong("screen_frames", screen)
-                .putLong("frames_bad", bad)
-                .putLong("last_activity_ms", System.currentTimeMillis())
-                .putString("last_frame", frame.hex)
-                .putString("last_direction", "BRIDGE")
-                .putString("last_command", hex(frame.command))
-                .putString("accessibility_status", "CANBUS bridge активен");
-
-        if (frame.command == 0x20 && frame.data.length >= 2) {
-            int keyId = frame.unsigned(0);
-            e.putString("last_key_id", hex(keyId));
-            e.putString("last_key_name", VehicleData.keyName(keyId));
-            e.putString("last_key_state", keyStateName(frame.unsigned(1)));
-        }
-
-        if (frame.command == 0x01) VehicleData.applyStatusFrame(prefs, e, frame);
-        if (frame.command == 0xC8) VehicleData.applyClockFrame(e, frame);
-
-        e.apply();
-
-        appendCapture(annotation + " | BRIDGE " + frame.hex +
-                " | checksum=" + (frame.checksumOk ? "OK" : "BAD"));
     }
 
     private void updateBridgeOverlay() {
@@ -594,7 +477,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
         TextView title = new TextView(this);
-        title.setText("PEUGEOT 307 CARINFO  AUTO v0.9");
+        title.setText("PEUGEOT 307 CARINFO  v0.10 SAFE");
         title.setTextColor(Color.WHITE);
         title.setTextSize(24);
         top.addView(title, new LinearLayout.LayoutParams(
@@ -740,7 +623,7 @@ public class CanScreenAccessibilityService extends AccessibilityService {
             File capture = new File(getFilesDir(), "capture.log");
             boolean append = capture.exists() && capture.length() < 2L * 1024L * 1024L;
             try (FileWriter w = new FileWriter(capture, append)) {
-                if (!append) w.write("# Peugeot 307 CarInfo bridge capture v0.9\n");
+                if (!append) w.write("# Peugeot 307 CarInfo bridge capture v0.10 SAFE\n");
                 String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
                         .format(new Date());
                 w.write(ts + " " + text + "\n");
