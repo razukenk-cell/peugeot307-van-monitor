@@ -23,10 +23,10 @@ final class DiagnosticsExporter {
     static Uri export(Context context) throws Exception {
         SharedPreferences p = context.getSharedPreferences("monitor", Context.MODE_PRIVATE);
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String filename = "peugeot307_diagnostic_v09_" + stamp + ".txt";
+        String filename = "peugeot307_diagnostic_v010_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 CarInfo diagnostic v0.9\n");
+        report.append("Peugeot 307 CarInfo diagnostic v0.10 SAFE PROBE\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
@@ -51,7 +51,30 @@ final class DiagnosticsExporter {
         report.append("B4: ").append(p.getInt("status_b4", -1)).append("\n");
         report.append("B8: ").append(p.getInt("status_b8", -1)).append("\n\n");
 
-        report.append("[AUTO CANBUS BRIDGE]\n");
+        report.append("[TTY CANBUS SAFE PROBE]\n");
+        report.append("Path: ").append(p.getString("tty_probe_path", DeviceNodeProbe.DEVICE)).append("\n");
+        report.append("Probe time: ").append(p.getString("tty_probe_time", "(not run)")).append("\n");
+        report.append("Exists: ").append(p.getBoolean("tty_probe_exists", false)).append("\n");
+        report.append("Canonical: ").append(p.getString("tty_probe_canonical", "(unknown)")).append("\n");
+        report.append("Type: ").append(p.getString("tty_probe_type", "(unknown)")).append("\n");
+        report.append("Mode: ").append(p.getString("tty_probe_mode", "(unknown)")).append("\n");
+        report.append("UID: ").append(p.getInt("tty_probe_uid", -1)).append("\n");
+        report.append("GID: ").append(p.getInt("tty_probe_gid", -1)).append("\n");
+        report.append("File.canRead: ").append(p.getBoolean("tty_probe_file_can_read", false)).append("\n");
+        report.append("Os.access R_OK: ").append(p.getBoolean("tty_probe_access_read", false)).append("\n");
+        report.append("File.canWrite: ").append(p.getBoolean("tty_probe_file_can_write", false)).append("\n");
+        report.append("Os.access W_OK: ").append(p.getBoolean("tty_probe_access_write", false)).append("\n");
+        report.append("SELinux: ").append(p.getString("tty_probe_selinux", "(unavailable)")).append("\n");
+        report.append("Stat error: ").append(p.getString("tty_probe_stat_error", "(none)")).append("\n");
+        report.append("R_OK error: ").append(p.getString("tty_probe_access_read_error", "(none)")).append("\n");
+        report.append("W_OK error: ").append(p.getString("tty_probe_access_write_error", "(none)")).append("\n");
+        report.append("SELinux error: ").append(p.getString("tty_probe_selinux_error", "(none)")).append("\n");
+        report.append("OPEN attempted: ").append(p.getBoolean("tty_probe_open_attempted", false)).append("\n");
+        report.append("READ attempted: ").append(p.getBoolean("tty_probe_read_attempted", false)).append("\n");
+        report.append("WRITE attempted: ").append(p.getBoolean("tty_probe_write_attempted", false)).append("\n");
+        report.append("Verdict: ").append(p.getString("tty_probe_verdict", "(not run)")).append("\n\n");
+
+        report.append("[AUTO CANBUS BRIDGE - DISABLED IN v0.10]\n");
         report.append("Enabled: ").append(p.getBoolean("bridge_enabled", false)).append("\n");
         report.append("Status: ").append(p.getString("bridge_status", "(none)")).append("\n");
         report.append("Capture: ").append(p.getString("bridge_capture_status", "(none)")).append("\n");
