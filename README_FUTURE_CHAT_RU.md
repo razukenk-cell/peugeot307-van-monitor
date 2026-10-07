@@ -642,3 +642,167 @@ APK:
 Главная кнопка v0.8: **«АВТО CANBUS — ЗАПУСТИТЬ»**.
 
 Это пока не настоящее внедрение в процесс: это безопасный hidden bridge. Если в будущем будет root/platform signing, можно перейти к системному сервису или process injection.
+
+
+---
+
+## 26. Обновление после реального теста v0.8 / текущая v0.9
+
+### Что произошло в машине с v0.8
+
+Пользователь установил v0.8 и нажал **AUTO CANBUS**.
+
+Фактически:
+
+- штатный CANBUS Debug Activity действительно запускался;
+- на секунду появлялся штатный экран/картинка с машиной;
+- затем сверху появлялся полноэкранный CarInfo;
+- CarInfo оставался в состоянии **«запускаю штатный декодер»**;
+- RAW frames не шли;
+- двери и данные не обновлялись;
+- вручную открытый штатный LOG по-прежнему работал и давал RAW frames.
+
+Вывод: запуск экспортированной DebugActivity работает, но v0.8 **не включала реальный Capture switch**.
+
+Причина найдена при анализе UI: надпись `Capture:` и сам Compose `Switch` — разные accessibility nodes. v0.8 искала текст `Capture`, поэтому кликала не туда.
+
+### Что изменено в v0.9
+
+Текущая версия проекта: **v0.9**.
+
+В `CanScreenAccessibilityService`:
+
+- ищется реальный `checkable` / `Switch` / `CheckBox` node;
+- fallback: поиск текста Capture и интерактивного sibling/parent;
+- сохраняется полное Accessibility tree штатного CANBUS окна;
+- fullscreen CarInfo **не закрывает штатный DebugActivity до появления реальных RAW frames**;
+- как только появляются `2E ...`, CarInfo создаёт fullscreen accessibility overlay;
+- если автоклик не сработает, пользователь сможет вручную включить Capture, после чего CarInfo должен перехватить поток;
+- диагностический экспорт v0.9 включает раздел `[STOCK ACCESSIBILITY TREE]`.
+
+### Текущий главный тест v0.9
+
+1. Установить v0.9 поверх v0.8.
+2. Оставить включённым `Peugeot 307 CANBUS screen reader`.
+3. Нажать `АВТО CANBUS — ЗАПУСТИТЬ`.
+4. Ничего вручную через меню CANBUS сначала не открывать.
+5. Если поток пошёл — должен появиться fullscreen CarInfo и статус `CANBUS ● RAW поток активен`.
+6. Если штатный Debug Tool остался на экране, вручную один раз включить его Capture.
+7. Если после ручного Capture CarInfo сразу ожил — значит bridge архитектура верна, осталась только автоматизация Switch.
+8. Если не получилось — экспортировать `peugeot307_diagnostic_v09_....txt`; особенно важен `[STOCK ACCESSIBILITY TREE]`.
+
+---
+
+## 27. Идея полного клона штатного CANBUS приложения
+
+Пользователь предложил сделать клон штатного CANBUS приложения и добавить в меню:
+
+- Peugeot
+- 307
+- старый VAN-профиль / 2003 год
+
+Это **технически возможно как направление**, но простое добавление пункта меню само по себе не решит доступ к данным.
+
+### Важные ограничения
+
+Штатный CANBUS APK:
+
+- `com.cartech.service.canbus`
+- установлен в `/system/app/carCanbus/carCanbus.apk`
+- работает как system app;
+- использует `sharedUserId=android.uid.system`;
+- владеет/открывает `/dev/ttyCanbus`;
+- использует `libserial_port.so`;
+- использует platform-only APIs типа `android.cartech.cardata.CarData`.
+
+Обычный sideloaded APK, подписанный нашим debug key:
+
+- не получает system UID;
+- не наследует platform signature permissions;
+- не может гарантированно использовать те же privileged APIs;
+- не может безопасно считать, что доступ к `/dev/ttyCanbus` будет разрешён.
+
+### Реальные варианты клона
+
+#### A. Использовать stock process как backend
+Самый безопасный no-root путь.
+
+Stock CANBUS остаётся владельцем UART, а CarInfo читает его вывод/данные и показывает полностью свой UI.
+
+Это текущая линия v0.8/v0.9.
+
+#### B. Патчить оригинальный system APK
+Можно теоретически:
+
+- добавить Peugeot 307 VAN 2001–2004 в меню;
+- изменить/расширить profile mapping;
+- добавить нашу графику;
+- добавить дополнительные decoded fields.
+
+Но замена системного APK, скорее всего, потребует:
+
+- root, или
+- модификации /system / прошивки, или
+- подписи тем же platform key производителя.
+
+Просто установить patched APK поверх system APK, скорее всего, нельзя из-за signature mismatch.
+
+#### C. Полностью свой standalone CANBUS clone
+Возможен только если наш APK может самостоятельно открыть `/dev/ttyCanbus`.
+
+Но **не открывать UART параллельно stock CANBUS**: два reader-а могут конкурировать за байты и ломать штатные кнопки/декодирование.
+
+### Правильный следующий эксперимент для standalone clone
+
+Добавить в отдельную тестовую сборку **read-only permission probe**:
+
+- существует ли `/dev/ttyCanbus`;
+- mode/permissions;
+- `canRead()`;
+- `canWrite()`;
+- ошибка при безопасном open;
+- тестировать только когда штатный CANBUS Debug/reader не активен;
+- сначала не отправлять ни одного байта.
+
+Если обычный APK получает `Permission denied`, полноценный standalone clone без system privilege/root практически закрыт.
+
+Если read access разрешён, следующий этап:
+
+1. восстановить baud/config/init sequence из stock APK;
+2. читать `2E...` напрямую;
+3. оставить transmit полностью выключенным;
+4. только после стабильного passive read строить самостоятельный Peugeot 307 profile.
+
+---
+
+## 28. Что уже точно нельзя забывать в новом чате
+
+1. **Не считать CarData direct успешным только по слову «ПОДКЛЮЧЕНО».**
+   В v0.7 exact `door_state` падает с InvocationTargetException.
+
+2. **Рабочий эталонный источник данных — штатный DebugActivity с включённым Capture.**
+   Когда Capture включён, RAW `2E...` приходит стабильно.
+
+3. **Двери и кнопки уже расшифрованы.**
+   Их не нужно исследовать заново.
+
+4. **660 km = 0x0294** и наружная температура **15°C = 0x0F** совпали с фото дисплея.
+   Это сильное подтверждение, но желательно получить вторую точку с изменёнными значениями.
+
+5. **Не читать /dev/ttyCanbus вторым процессом параллельно stock app.**
+   Сначала только permission probe без конкуренции.
+
+6. **Не отправлять команды в CAN/VAN.**
+   Проект пока strictly read-only.
+
+---
+
+## 29. Актуальный prompt для нового чата
+
+> Продолжаем проект Peugeot 307 CarInfo. В архиве текущие исходники и README_FUTURE_CHAT_RU.md. Сначала прочитай README полностью, особенно разделы 25–29, и используй его как handoff предыдущего чата. Текущая версия — v0.9. Уже подтверждены raw протокол 2E, checksum, все двери/багажник, подрулевые кнопки, время, сильные кандидаты range/наружной температуры. CarData подключается, но exact door_state падает с InvocationTargetException. Рабочий источник RAW — штатный com.cartech.service.canbus DebugActivity при включённом Capture. v0.9 пытается автоматически найти реальный Compose Switch Capture через Accessibility и не закрывает stock DebugActivity до появления RAW frames. Не повторяй старые CarData-подходы без анализа handoff. Следующая развилка: довести hidden stock bridge до рабочего состояния либо сделать безопасный read-only permission probe /dev/ttyCanbus для оценки возможности полноценного standalone CANBUS-клона. Никакой передачи в VAN/CAN.
+
+---
+
+## 30. Текущее состояние в одном абзаце
+
+На текущий момент лучший доказанный data path такой: **RP5 → /dev/ttyCanbus → stock com.cartech.service.canbus → DebugActivity Capture → RAW 2E frames → CarInfo parser**. CarData общий API существует, но нужные CANBUS properties для sideloaded APK не читаются. v0.9 автоматизирует запуск stock DebugActivity и реальный Capture switch через Accessibility и показывает собственный UI только после появления RAW. Полный standalone clone возможен только после проверки, может ли обычный APK безопасно открыть /dev/ttyCanbus без system UID. Если нет — нужно либо использовать stock process как backend, либо патчить системный APK/прошивку.
