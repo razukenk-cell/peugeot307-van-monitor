@@ -42,25 +42,25 @@ jobs:
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Peugeot307CarInfo-v0.9-debug.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk Peugeot307CarInfo-v0.10-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Peugeot307CarInfo-v0.9-debug
-          path: Peugeot307CarInfo-v0.9-debug.apk
+          name: Peugeot307CarInfo-v0.10-debug
+          path: Peugeot307CarInfo-v0.10-debug.apk
           if-no-files-found: error
           retention-days: 30
 
       - name: Package source + handoff README
         shell: bash
         run: |
-          zip -r Peugeot307CarInfo-v0.9-source.zip .             -x ".git/*"                ".gradle/*"                "app/build/*"                "build/*"                "Peugeot307CarInfo-v0.9-debug.apk"
+          zip -r Peugeot307CarInfo-v0.10-source.zip .             -x ".git/*"                ".gradle/*"                "app/build/*"                "build/*"                "Peugeot307CarInfo-v0.10-debug.apk"
 
       - name: Upload source package
         uses: actions/upload-artifact@v4
         with:
-          name: Peugeot307CarInfo-v0.9-source
-          path: Peugeot307CarInfo-v0.9-source.zip
+          name: Peugeot307CarInfo-v0.10-source
+          path: Peugeot307CarInfo-v0.10-source.zip
           if-no-files-found: error
           retention-days: 30
