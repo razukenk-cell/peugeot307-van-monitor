@@ -38,6 +38,7 @@ public class MainActivity extends Activity {
     private TextView connection;
     private TextView doorText;
     private TextView bridge;
+    private TextView ttyProbe;
     private TextView telemetry;
     private TextView direct;
     private TextView steering;
@@ -57,14 +58,20 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("monitor", Context.MODE_PRIVATE);
+
+        // v0.10 safety reset FIRST: an upgrade from v0.9 may leave bridge_enabled=true.
+        // Force AUTO bridge off before starting any app component/UI.
+        prefs.edit()
+                .putBoolean("bridge_enabled", false)
+                .putBoolean("bridge_pending", false)
+                .putString("bridge_status", "v0.10 SAFE: AUTO bridge отключён")
+                .putString("bridge_capture_status", "v0.10 SAFE: автоклик удалён")
+                .apply();
+
         buildUi();
         requestNotificationPermissionIfNeeded();
         startMonitor(false);
         handler.post(refresh);
-
-        if (prefs.getBoolean("bridge_enabled", false) && isAccessibilityServiceEnabled()) {
-            handler.postDelayed(() -> StockCanbusBridge.launch(this), 700);
-        }
     }
 
     private void buildUi() {
@@ -77,7 +84,7 @@ public class MainActivity extends Activity {
         root.setPadding(18, 10, 18, 20);
         scroll.addView(root);
 
-        TextView title = text("PEUGEOT 307 CARINFO  v0.9", 24, Color.WHITE);
+        TextView title = text("PEUGEOT 307 CARINFO  v0.10 SAFE PROBE", 24, Color.WHITE);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
 
@@ -86,10 +93,17 @@ public class MainActivity extends Activity {
         connection.setPadding(0, 3, 0, 7);
         root.addView(connection);
 
-        Button auto = button("АВТО CANBUS — ЗАПУСТИТЬ", v -> startAutoCanbus());
-        auto.setTextSize(17);
-        auto.setMinHeight(66);
-        root.addView(auto);
+        Button probeButton = button("БЕЗОПАСНО ПРОВЕРИТЬ /dev/ttyCanbus", v -> runSafeTtyProbe());
+        probeButton.setTextSize(17);
+        probeButton.setMinHeight(66);
+        root.addView(probeButton);
+
+        TextView safety = text(
+                "Только metadata/access probe: stat/lstat/access. Устройство НЕ открывается; read/write не вызываются.",
+                13, Color.rgb(170, 220, 170));
+        safety.setGravity(Gravity.CENTER_HORIZONTAL);
+        safety.setPadding(0, 2, 0, 8);
+        root.addView(safety);
 
         LinearLayout dash = new LinearLayout(this);
         dash.setOrientation(LinearLayout.HORIZONTAL);
@@ -114,7 +128,8 @@ public class MainActivity extends Activity {
         dash.addView(right, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.85f));
 
-        bridge = card(right, "AUTO CANBUS bridge");
+        ttyProbe = card(right, "/dev/ttyCanbus SAFE probe");
+        bridge = card(right, "Stock bridge (v0.10 disabled)");
         direct = card(right, "CarData (диагностика)");
         telemetry = card(right, "Данные автомобиля");
         steering = card(right, "Подрулевой пульт");
@@ -135,9 +150,11 @@ public class MainActivity extends Activity {
         row1.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(row1);
 
-        row1.addView(button("Спец. возможности", v -> openAccessibility()),
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row1.addView(button("ОСТАНОВИТЬ AUTO CANBUS", v -> stopAutoCanbus()),
+        row1.addView(button("SAFE: bridge выключен", v -> {
+            StockCanbusBridge.disable(this);
+            Toast.makeText(this, "v0.10 SAFE: stock DebugActivity не запускается", Toast.LENGTH_SHORT).show();
+        }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row1.addView(button("Проверить ttyCanbus", v -> runSafeTtyProbe()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         row1.addView(button("Экспорт диагностики", v -> exportDiagnostics()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -156,12 +173,11 @@ public class MainActivity extends Activity {
         }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView help = text(
-                "v0.9 сама запускает штатный Canbus Debug Tool и теперь ищет именно Compose Switch Capture, " +
-                "а не текстовую надпись. Пока RAW-поток ещё не пошёл, CarInfo НЕ закрывает штатный экран; " +
-                "как только появляются кадры 2E..., поверх автоматически появляется наш интерфейс. " +
-                "Штатный процесс остаётся единственным владельцем /dev/ttyCanbus.\n\n" +
-                "Важно: один раз должна быть включена служба «Peugeot 307 CANBUS screen reader» в " +
-                "Специальных возможностях. Это read-only мост — CarInfo не отправляет пакеты в VAN/CAN.",
+                "v0.10 — безопасный эксперимент после результата v0.9. AUTO CANBUS bridge полностью отключён: " +
+                "CarInfo не запускает штатный DebugActivity, не кликает по его элементам и не перезапускает окно.\n\n" +
+                "Кнопка проверки /dev/ttyCanbus выполняет только exists/canRead/canWrite, Os.access и lstat. " +
+                "Она НЕ создаёт FileInputStream/FileOutputStream, НЕ вызывает open/read/write/ioctl/termios " +
+                "и ничего не отправляет в CAN/VAN. Результат попадёт в экспорт диагностики.",
                 13, Color.LTGRAY);
         help.setPadding(0, 8, 0, 2);
         root.addView(help);
@@ -200,40 +216,31 @@ public class MainActivity extends Activity {
         return b;
     }
 
+    private void runSafeTtyProbe() {
+        if (ttyProbe != null) ttyProbe.setText("Проверяю metadata/access…\nOPEN/READ/WRITE: НЕ выполняются");
+        new Thread(() -> {
+            DeviceNodeProbe.Result result = DeviceNodeProbe.run(this);
+            runOnUiThread(() -> {
+                if (ttyProbe != null) ttyProbe.setText(result.summary);
+                Toast.makeText(this, "SAFE probe: " + result.verdict, Toast.LENGTH_LONG).show();
+            });
+        }, "ttyCanbus-safe-probe").start();
+    }
+
     private void startAutoCanbus() {
-        prefs.edit()
-                .putBoolean("bridge_enabled", true)
-                .putBoolean("bridge_pending", true)
-                .putString("bridge_status", "Подготовка AUTO CANBUS…")
-                .apply();
-
-        startMonitor(false);
-
-        if (!isAccessibilityServiceEnabled()) {
-            Toast.makeText(this,
-                    "Сначала включите «Peugeot 307 CANBUS screen reader». После возврата AUTO CANBUS запустится сам.",
-                    Toast.LENGTH_LONG).show();
-            openAccessibility();
-            return;
-        }
-
-        launchBridgeNow();
+        StockCanbusBridge.disable(this);
+        Toast.makeText(this,
+                "v0.10 SAFE: AUTO CANBUS отключён. Используйте безопасную проверку /dev/ttyCanbus.",
+                Toast.LENGTH_LONG).show();
     }
 
     private void launchBridgeNow() {
-        prefs.edit().putBoolean("bridge_pending", false).apply();
-        boolean ok = StockCanbusBridge.launch(this);
-        if (!ok) {
-            Toast.makeText(this,
-                    "Не удалось открыть штатный Canbus Debug Tool. Экспортируйте диагностику.",
-                    Toast.LENGTH_LONG).show();
-        }
+        StockCanbusBridge.disable(this);
     }
 
     private void stopAutoCanbus() {
         StockCanbusBridge.disable(this);
         prefs.edit().putBoolean("bridge_pending", false).apply();
-        Toast.makeText(this, "AUTO CANBUS остановлен", Toast.LENGTH_SHORT).show();
     }
 
     private boolean isAccessibilityServiceEnabled() {
@@ -272,12 +279,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-
-        if (prefs != null &&
-                prefs.getBoolean("bridge_enabled", false) &&
-                prefs.getBoolean("bridge_pending", false) &&
-                isAccessibilityServiceEnabled()) {
-            handler.postDelayed(this::launchBridgeNow, 450);
+        if (prefs != null && prefs.getBoolean("bridge_enabled", false)) {
+            StockCanbusBridge.disable(this);
         }
     }
 
@@ -383,7 +386,7 @@ public class MainActivity extends Activity {
                             .format(new Date(last)));
             connection.setTextColor(Color.rgb(240, 190, 90));
         } else {
-            connection.setText("CANBUS ○ нажмите AUTO CANBUS");
+            connection.setText("SAFE PROBE ○ CANBUS UART не открывается");
             connection.setTextColor(Color.LTGRAY);
         }
 
@@ -392,8 +395,12 @@ public class MainActivity extends Activity {
                 ? Long.MAX_VALUE
                 : System.currentTimeMillis() - bridgeFrame;
 
+        if (ttyProbe != null) {
+            ttyProbe.setText(DeviceNodeProbe.summary(prefs));
+        }
+
         bridge.setText(
-                prefs.getString("bridge_status", "выключен") +
+                prefs.getString("bridge_status", "v0.10 SAFE: выключен") +
                 "\nCapture: " + prefs.getString("bridge_capture_status", "—") +
                 "\nRAW: " + (bridgeAge < 1500 ? "АКТИВЕН" : "нет свежих кадров") +
                 "\nОшибка: " + prefs.getString("bridge_error", "—"));
