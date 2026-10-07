@@ -1,0 +1,2 @@
+Trigger Peugeot307 CarInfo v0.5 build
+CANBUS APK finder/copy button
