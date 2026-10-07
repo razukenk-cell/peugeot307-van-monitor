@@ -1,0 +1,22 @@
+Продолжаем проект Peugeot 307 CarInfo.
+
+Я загрузил архив исходников предыдущего чата. Сначала полностью прочитай README_FUTURE_CHAT_RU.md, особенно последние разделы 25–30, и считай его authoritative handoff.
+
+Кратко:
+- Peugeot 307 2003, ранняя VAN/CAN архитектура.
+- Android-магнитола RK3566 / CTC01_P01, реальный Android 12.
+- CAN/VAN box SimpleSoft RP5-PA-104, protocol psa_01_sp.
+- Stock CANBUS package: com.cartech.service.canbus, /system/app/carCanbus/carCanbus.apk.
+- Stock app владеет /dev/ttyCanbus и использует libserial_port.so.
+- RAW protocol 2E... уже разобран; checksum подтверждён.
+- Door mask уже полностью расшифрована: 08 boot, 10 rear-left, 20 rear-right, 40 front-left, 80 front-right.
+- Steering IDs уже расшифрованы: 01 Vol+, 02 Vol-, 05 Source, 06 wheel up, 07 wheel down, 80 trip-computer button.
+- C8 содержит время.
+- 0x0294 совпало с 660 km range, 0x0F — с 15°C outside temp.
+- CarData подключается, но state.canbus.door_state.i у sideloaded APK падает с InvocationTargetException.
+- Надёжный RAW источник сейчас — stock DebugActivity при включённом Capture.
+- v0.9 пытается сама запустить stock DebugActivity, найти Compose Switch Capture через Accessibility, читать RAW frames и показывать собственный fullscreen UI.
+- Если v0.9 bridge не станет стабильным, следующий безопасный эксперимент — read-only permission probe /dev/ttyCanbus при неактивном stock reader, чтобы понять, возможен ли полноценный standalone CANBUS clone.
+- Не открывать /dev/ttyCanbus параллельно stock reader и не отправлять никаких команд в VAN/CAN.
+
+Не начинай расшифровывать двери/кнопки заново — это уже подтверждено практическими тестами. Продолжай с текущего состояния проекта.
