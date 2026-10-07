@@ -377,6 +377,70 @@ public class CanScreenAccessibilityService extends AccessibilityService {
         }
     }
 
+    private synchronized void recordFrame(FrameParser.Frame frame) {
+        lastFrameSeenMs = System.currentTimeMillis();
+
+        boolean meaningful = false;
+        String annotation = "";
+
+        if (frame.command == 0x20 && frame.data.length >= 2) {
+            int keyId = frame.unsigned(0);
+            int state = frame.unsigned(1);
+            Integer previous = lastKeyStates.get(keyId);
+            if (previous == null || previous != state) {
+                lastKeyStates.put(keyId, state);
+                meaningful = true;
+                annotation = "BRIDGE KEY " + VehicleData.keyName(keyId) +
+                        " id=" + hex(keyId) + " state=" + keyStateName(state);
+            }
+        } else if (frame.command == 0x01) {
+            String payload = frame.payloadHex();
+            if (!payload.equals(lastVehiclePayload)) {
+                lastVehiclePayload = payload;
+                meaningful = true;
+                annotation = "BRIDGE VEHICLE_STATUS changed";
+            }
+        } else if (frame.command == 0xC8) {
+            meaningful = true;
+            annotation = "BRIDGE CLOCK";
+        } else if (!frame.hex.equals(lastOtherFrame)) {
+            lastOtherFrame = frame.hex;
+            meaningful = true;
+            annotation = "BRIDGE CMD=" + hex(frame.command);
+        }
+
+        if (!meaningful) return;
+
+        long total = prefs.getLong("frames_total", 0) + 1;
+        long screen = prefs.getLong("screen_frames", 0) + 1;
+        long bad = prefs.getLong("frames_bad", 0) + (frame.checksumOk ? 0 : 1);
+
+        SharedPreferences.Editor e = prefs.edit()
+                .putLong("frames_total", total)
+                .putLong("screen_frames", screen)
+                .putLong("frames_bad", bad)
+                .putLong("last_activity_ms", System.currentTimeMillis())
+                .putString("last_frame", frame.hex)
+                .putString("last_direction", "BRIDGE")
+                .putString("last_command", hex(frame.command))
+                .putString("accessibility_status", "CANBUS bridge активен");
+
+        if (frame.command == 0x20 && frame.data.length >= 2) {
+            int keyId = frame.unsigned(0);
+            e.putString("last_key_id", hex(keyId));
+            e.putString("last_key_name", VehicleData.keyName(keyId));
+            e.putString("last_key_state", keyStateName(frame.unsigned(1)));
+        }
+
+        if (frame.command == 0x01) VehicleData.applyStatusFrame(prefs, e, frame);
+        if (frame.command == 0xC8) VehicleData.applyClockFrame(e, frame);
+
+        e.apply();
+
+        appendCapture(annotation + " | BRIDGE " + frame.hex +
+                " | checksum=" + (frame.checksumOk ? "OK" : "BAD"));
+    }
+
     private void updateBridgeOverlay() {
         if (prefs == null) return;
 
