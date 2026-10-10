@@ -38,6 +38,7 @@ public class MainActivity extends Activity {
     private TextView connection;
     private TextView doorText;
     private TextView bridge;
+    private TextView backend;
     private TextView ttyProbe;
     private TextView telemetry;
     private TextView direct;
@@ -64,8 +65,8 @@ public class MainActivity extends Activity {
         prefs.edit()
                 .putBoolean("bridge_enabled", false)
                 .putBoolean("bridge_pending", false)
-                .putString("bridge_status", "v0.10 SAFE: AUTO bridge отключён")
-                .putString("bridge_capture_status", "v0.10 SAFE: автоклик удалён")
+                .putString("bridge_status", "v0.11 SAFE: AUTO bridge отключён")
+                .putString("bridge_capture_status", "v0.11 SAFE: автоклик отсутствует")
                 .apply();
 
         buildUi();
@@ -84,7 +85,7 @@ public class MainActivity extends Activity {
         root.setPadding(18, 10, 18, 20);
         scroll.addView(root);
 
-        TextView title = text("PEUGEOT 307 CARINFO  v0.10 SAFE PROBE", 24, Color.WHITE);
+        TextView title = text("PEUGEOT 307 CARINFO  v0.11 BACKEND RESEARCH", 24, Color.WHITE);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
 
@@ -93,13 +94,14 @@ public class MainActivity extends Activity {
         connection.setPadding(0, 3, 0, 7);
         root.addView(connection);
 
-        Button probeButton = button("БЕЗОПАСНО ПРОВЕРИТЬ /dev/ttyCanbus", v -> runSafeTtyProbe());
+        Button probeButton = button("1. ИССЛЕДОВАТЬ ШТАТНЫЙ CANBUS BACKEND", v -> runBackendProbe());
         probeButton.setTextSize(17);
         probeButton.setMinHeight(66);
         root.addView(probeButton);
 
         TextView safety = text(
-                "Только metadata/access probe: stat/lstat/access. Устройство НЕ открывается; read/write не вызываются.",
+                "PASSIVE/READ-ONLY: PackageManager + stock APK strings + CarData getters/listener + Binder descriptor. " +
+                "UART не открывается, сервисы не запускаются, broadcast не отправляется.",
                 13, Color.rgb(170, 220, 170));
         safety.setGravity(Gravity.CENTER_HORIZONTAL);
         safety.setPadding(0, 2, 0, 8);
@@ -128,7 +130,8 @@ public class MainActivity extends Activity {
         dash.addView(right, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.85f));
 
-        ttyProbe = card(right, "/dev/ttyCanbus SAFE probe");
+        backend = card(right, "v0.11 Stock backend");
+        ttyProbe = card(right, "/dev/ttyCanbus permissions");
         bridge = card(right, "Stock bridge (v0.10 disabled)");
         direct = card(right, "CarData (диагностика)");
         telemetry = card(right, "Данные автомобиля");
@@ -150,34 +153,32 @@ public class MainActivity extends Activity {
         row1.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(row1);
 
-        row1.addView(button("SAFE: bridge выключен", v -> {
-            StockCanbusBridge.disable(this);
-            Toast.makeText(this, "v0.10 SAFE: stock DebugActivity не запускается", Toast.LENGTH_SHORT).show();
-        }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row1.addView(button("Проверить ttyCanbus", v -> runSafeTtyProbe()),
+        row1.addView(button("Исследовать backend", v -> runBackendProbe()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         row1.addView(button("Экспорт диагностики", v -> exportDiagnostics()),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row1.addView(button("Повторить tty probe", v -> runSafeTtyProbe()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         LinearLayout row2 = new LinearLayout(this);
         row2.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(row2);
 
+        row2.addView(button("Экспорт штатного CANBUS APK", v -> exportCanbusApk()),
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         row2.addView(button("Папка старых логов", v -> chooseFolder()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row2.addView(button("Скопировать CANBUS APK", v -> exportCanbusApk()),
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row2.addView(button("Очистить диагностику", v -> {
+        row2.addView(button("Очистить исследование", v -> {
             MonitorService.clearCapture(this);
-            Toast.makeText(this, "Диагностическая запись очищена", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Логи исследования очищены", Toast.LENGTH_SHORT).show();
         }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView help = text(
-                "v0.10 — безопасный эксперимент после результата v0.9. AUTO CANBUS bridge полностью отключён: " +
-                "CarInfo не запускает штатный DebugActivity, не кликает по его элементам и не перезапускает окно.\n\n" +
-                "Кнопка проверки /dev/ttyCanbus выполняет только exists/canRead/canWrite, Os.access и lstat. " +
-                "Она НЕ создаёт FileInputStream/FileOutputStream, НЕ вызывает open/read/write/ioctl/termios " +
-                "и ничего не отправляет в CAN/VAN. Результат попадёт в экспорт диагностики.",
+                "ТЕСТ v0.11: нажмите «ИССЛЕДОВАТЬ ШТАТНЫЙ CANBUS BACKEND». Когда статус станет ГОТОВО, " +
+                "в течение 1–2 минут по очереди откройте/закройте каждую дверь и багажник, нажмите кнопки руля " +
+                "(Volume+/−, Source, вверх/вниз, trip), включите/выключите свет. Broadcast/CarData listener остаются только слушателями.\n\n" +
+                "После теста нажмите «Экспорт диагностики». Для максимально глубокого анализа можно также нажать " +
+                "«Экспорт штатного CANBUS APK» и прислать base.apk вместе с диагностикой. Никаких CAN/VAN команд v0.11 не передаёт.",
                 13, Color.LTGRAY);
         help.setPadding(0, 8, 0, 2);
         root.addView(help);
@@ -216,6 +217,18 @@ public class MainActivity extends Activity {
         return b;
     }
 
+    private void runBackendProbe() {
+        if (backend != null) backend.setText("Исследование запущено…\nне закрывайте приложение 10–20 сек");
+        try {
+            Intent i = new Intent(this, MonitorService.class).setAction(MonitorService.ACTION_BACKEND_PROBE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
+            else startService(i);
+            Toast.makeText(this, "v0.11: пассивное исследование backend запущено", Toast.LENGTH_LONG).show();
+        } catch (Throwable t) {
+            Toast.makeText(this, "Ошибка запуска probe: " + t.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
     private void runSafeTtyProbe() {
         if (ttyProbe != null) ttyProbe.setText("Проверяю metadata/access…\nOPEN/READ/WRITE: НЕ выполняются");
         new Thread(() -> {
@@ -230,7 +243,7 @@ public class MainActivity extends Activity {
     private void startAutoCanbus() {
         StockCanbusBridge.disable(this);
         Toast.makeText(this,
-                "v0.10 SAFE: AUTO CANBUS отключён. Используйте безопасную проверку /dev/ttyCanbus.",
+                "v0.11 SAFE: AUTO CANBUS отключён.",
                 Toast.LENGTH_LONG).show();
     }
 
@@ -395,12 +408,22 @@ public class MainActivity extends Activity {
                 ? Long.MAX_VALUE
                 : System.currentTimeMillis() - bridgeFrame;
 
+        if (backend != null) {
+            String status = prefs.getString("backend_probe_status", "ещё не запускалось");
+            String combined = prefs.getString("backend_probe_combined",
+                    prefs.getString("backend_probe_summary", ""));
+            String lastBroadcast = prefs.getString("backend_last_broadcast", "(пока нет)");
+            backend.setText("status=" + status +
+                    (combined == null || combined.isEmpty() ? "" : "\n" + combined) +
+                    "\nlast broadcast: " + lastBroadcast);
+        }
+
         if (ttyProbe != null) {
             ttyProbe.setText(DeviceNodeProbe.summary(prefs));
         }
 
         bridge.setText(
-                prefs.getString("bridge_status", "v0.10 SAFE: выключен") +
+                prefs.getString("bridge_status", "v0.11 SAFE: выключен") +
                 "\nCapture: " + prefs.getString("bridge_capture_status", "—") +
                 "\nRAW: " + (bridgeAge < 1500 ? "АКТИВЕН" : "нет свежих кадров") +
                 "\nОшибка: " + prefs.getString("bridge_error", "—"));
