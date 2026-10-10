@@ -7,7 +7,9 @@ import android.os.Process;
 import java.io.File;
 import java.io.FileWriter;
 import java.lang.reflect.Array;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
@@ -115,6 +117,7 @@ final class DirectCarDataReader {
             removeListener = find(carDataClass, "removeListener",
                     Class.forName("android.cartech.cardata.CarData$CarDataListener"));
 
+            reflectCarDataApi(carDataClass);
             discoverKeys();
             registerListener(carDataClass);
 
@@ -198,11 +201,14 @@ final class DirectCarDataReader {
                     listenerClass.getClassLoader(),
                     new Class<?>[]{listenerClass},
                     (proxy, method, args) -> {
-                        if ("onDataChanged".equals(method.getName()) && args != null && args.length >= 1) {
-                            String key = String.valueOf(args[0]);
-                            onChanged(key,
-                                    args.length > 1 ? args[1] : null,
-                                    args.length > 2 ? args[2] : null);
+                        if ("onDataChanged".equals(method.getName())) {
+                            append("CALLBACK " + method.toGenericString() + " args=" + describeArgs(args));
+                            if (args != null && args.length >= 1) {
+                                String key = String.valueOf(args[0]);
+                                onChanged(key,
+                                        args.length > 1 ? args[1] : null,
+                                        args.length > 2 ? args[2] : null);
+                            }
                         }
                         return null;
                     });
@@ -240,6 +246,10 @@ final class DirectCarDataReader {
                 .putInt("direct_key_count", knownKeys.size())
                 .putLong("direct_last_ms", System.currentTimeMillis())
                 .apply();
+
+        if (key.contains(".canbus.")) {
+            appendDeep(timestamp() + " EVENT MATRIX " + probeKeyMatrix(key));
+        }
     }
 
     synchronized void poll() {
@@ -551,6 +561,186 @@ final class DirectCarDataReader {
             }
         } catch (Throwable ignored) {
         }
+    }
+
+
+    synchronized String runDeepProbe() {
+        if (carData == null) return "CarData не подключён";
+        StringBuilder out = new StringBuilder();
+        out.append("# Peugeot 307 CarInfo v0.11 CarData deep read-only probe\n");
+        out.append("# Only getter/listener/reflection calls; no setters are invoked\n");
+        out.append("time=").append(new Date()).append('\n');
+
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        keys.add(KEY_DOOR);
+        keys.add(KEY_TURN);
+        keys.add(KEY_OUT_TEMP);
+        keys.add(KEY_CANBOX_VERSION);
+        keys.add(KEY_CURRENT_CANBUS);
+        for (String k : knownKeys) {
+            if (k.contains(".canbus.")) keys.add(k);
+            if (keys.size() >= 100) break;
+        }
+
+        int tested = 0;
+        for (String key : keys) {
+            out.append(probeKeyMatrix(key)).append('\n');
+            if (++tested >= 100) break;
+        }
+        out.append("tested=").append(tested).append('\n');
+        writeDeep(out.toString(), false);
+        String summary = "CarData getter matrix: keys=" + tested
+                + "\nlistener=" + prefs.getString("direct_listener", "?")
+                + "\nсмотри [CARDATA DEEP PROBE] в диагностике";
+        prefs.edit().putString("direct_deep_probe_summary", summary)
+                .putLong("direct_deep_probe_ms", System.currentTimeMillis()).apply();
+        return summary;
+    }
+
+    private String probeKeyMatrix(String key) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("KEY ").append(key);
+        if (hasKey != null) {
+            try { sb.append(" hasKey=").append(hasKey.invoke(carData, key)); }
+            catch (Throwable t) { sb.append(" hasKeyErr=").append(rootError(t)); }
+        }
+
+        if (key.endsWith(".i")) {
+            final int sentinel = 0x6A11D00D;
+            if (getInt != null) {
+                try { sb.append(" getInt=").append(getInt.invoke(carData, key, sentinel)); }
+                catch (Throwable t) { sb.append(" getIntErr=").append(rootError(t)); }
+            }
+            if (getIntIndexed != null) {
+                sb.append(" indexed{");
+                String firstErr = null;
+                boolean any = false;
+                for (int i = 0; i < 16; i++) {
+                    try {
+                        Object v = getIntIndexed.invoke(carData, key, i, sentinel);
+                        if (v instanceof Integer && ((Integer) v) != sentinel) {
+                            if (any) sb.append(',');
+                            sb.append(i).append('=').append(v);
+                            any = true;
+                        }
+                    } catch (Throwable t) {
+                        if (firstErr == null) firstErr = rootError(t);
+                    }
+                }
+                if (!any) sb.append("none");
+                if (firstErr != null) sb.append(" err=").append(firstErr);
+                sb.append('}');
+            }
+            if (getIntArray != null) {
+                try { sb.append(" intArray=").append(arrayToString(getIntArray.invoke(carData, key))); }
+                catch (Throwable t) { sb.append(" intArrayErr=").append(rootError(t)); }
+            }
+        } else if (key.endsWith(".s")) {
+            if (getString != null) {
+                try { sb.append(" getString=").append(String.valueOf(getString.invoke(carData, key))); }
+                catch (Throwable t) { sb.append(" getStringErr=").append(rootError(t)); }
+            }
+            if (getStringIndexed != null) {
+                sb.append(" indexed{");
+                String firstErr = null;
+                boolean any = false;
+                for (int i = 0; i < 16; i++) {
+                    try {
+                        Object v = getStringIndexed.invoke(carData, key, i);
+                        String x = v == null ? "" : String.valueOf(v);
+                        if (!x.isEmpty()) {
+                            if (any) sb.append(',');
+                            sb.append(i).append('=').append(x);
+                            any = true;
+                        }
+                    } catch (Throwable t) {
+                        if (firstErr == null) firstErr = rootError(t);
+                    }
+                }
+                if (!any) sb.append("none");
+                if (firstErr != null) sb.append(" err=").append(firstErr);
+                sb.append('}');
+            }
+            if (getStringArray != null) {
+                try { sb.append(" stringArray=").append(arrayToString(getStringArray.invoke(carData, key))); }
+                catch (Throwable t) { sb.append(" stringArrayErr=").append(rootError(t)); }
+            }
+        } else {
+            sb.append(" typedRead=").append(readKey(key));
+        }
+        return sb.toString();
+    }
+
+    private void reflectCarDataApi(Class<?> carDataClass) {
+        StringBuilder out = new StringBuilder();
+        out.append("# CarData reflection v0.11\n");
+        Class<?>[] classes;
+        try {
+            classes = new Class<?>[]{
+                    carDataClass,
+                    Class.forName("android.cartech.cardata.KeyFilter"),
+                    Class.forName("android.cartech.cardata.CarData$CarDataListener")
+            };
+        } catch (Throwable t) {
+            classes = new Class<?>[]{carDataClass};
+        }
+        for (Class<?> c : classes) {
+            out.append("CLASS ").append(c.getName())
+                    .append(" loader=").append(String.valueOf(c.getClassLoader())).append('\n');
+            try {
+                for (Method m : c.getDeclaredMethods()) {
+                    out.append("  METHOD ").append(Modifier.toString(m.getModifiers()))
+                            .append(' ').append(m.toGenericString()).append('\n');
+                }
+            } catch (Throwable t) { out.append("  methods error ").append(rootError(t)).append('\n'); }
+            try {
+                for (Field f : c.getDeclaredFields()) {
+                    out.append("  FIELD ").append(Modifier.toString(f.getModifiers())).append(' ')
+                            .append(f.getType().getName()).append(' ').append(f.getName()).append('\n');
+                }
+            } catch (Throwable t) { out.append("  fields error ").append(rootError(t)).append('\n'); }
+        }
+        writeReflection(out.toString());
+        prefs.edit().putString("direct_reflection_status", "CarData API reflection записан").apply();
+    }
+
+    private static String describeArgs(Object[] args) {
+        if (args == null) return "null";
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < args.length; i++) {
+            if (i > 0) sb.append(", ");
+            Object a = args[i];
+            sb.append(i).append(':').append(a == null ? "null" : a.getClass().getName())
+                    .append('=').append(String.valueOf(a));
+        }
+        return sb.append(']').toString();
+    }
+
+    private static String rootError(Throwable t) {
+        Throwable x = t;
+        while (x.getCause() != null && x.getCause() != x) x = x.getCause();
+        String m = x.getMessage();
+        return x.getClass().getSimpleName() + (m == null || m.isEmpty() ? "" : ":" + m.replace('\n', ' '));
+    }
+
+    private static String timestamp() {
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
+    }
+
+    private void appendDeep(String line) { writeDeep(line + "\n", true); }
+
+    private void writeReflection(String text) {
+        try {
+            File file = new File(context.getFilesDir(), "cardata_api_reflection.log");
+            try (FileWriter w = new FileWriter(file, false)) { w.write(text); }
+        } catch (Throwable ignored) {}
+    }
+
+    private void writeDeep(String text, boolean appendFile) {
+        try {
+            File file = new File(context.getFilesDir(), "cardata_deep_probe.log");
+            try (FileWriter w = new FileWriter(file, appendFile)) { w.write(text); }
+        } catch (Throwable ignored) {}
     }
 
     synchronized void stop() {

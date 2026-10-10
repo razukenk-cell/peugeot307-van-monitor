@@ -37,6 +37,7 @@ import java.util.concurrent.TimeUnit;
 
 public class MonitorService extends Service {
     public static final String ACTION_STOP = "com.razukenk.peugeot307vanmonitor.STOP";
+    public static final String ACTION_BACKEND_PROBE = "com.razukenk.peugeot307vanmonitor.BACKEND_PROBE";
 
     private static final String CHANNEL_ID = "peugeot307_van_monitor";
     private static final int NOTIFICATION_ID = 307;
@@ -89,6 +90,27 @@ public class MonitorService extends Service {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
             stopSelf();
             return START_NOT_STICKY;
+        }
+        if (intent != null && ACTION_BACKEND_PROBE.equals(intent.getAction())) {
+            prefs.edit().putString("backend_probe_status", "исследование запущено…").apply();
+            if (executor != null) {
+                executor.execute(() -> {
+                    try {
+                        StockBackendProbe.Result stock = StockBackendProbe.run(this, true);
+                        String carData = directReader != null && directReader.isConnected()
+                                ? directReader.runDeepProbe() : "CarData не подключён";
+                        prefs.edit()
+                                .putString("backend_probe_status", "ГОТОВО")
+                                .putString("backend_probe_combined", stock.summary + "\n" + carData)
+                                .putLong("backend_probe_done_ms", System.currentTimeMillis())
+                                .apply();
+                    } catch (Throwable t) {
+                        prefs.edit().putString("backend_probe_status",
+                                "ошибка: " + t.getClass().getSimpleName() + ": " + safeMessage(t)).apply();
+                    }
+                });
+            }
+            return START_STICKY;
         }
         return START_STICKY;
     }
@@ -355,6 +377,12 @@ public class MonitorService extends Service {
         if (capture.exists()) capture.delete();
         File direct = new File(context.getFilesDir(), "direct_car_data.log");
         if (direct.exists()) direct.delete();
+        String[] v011 = {"stock_backend_probe.log", "stock_broadcasts.log",
+                "cardata_deep_probe.log", "cardata_api_reflection.log"};
+        for (String name : v011) {
+            File f = new File(context.getFilesDir(), name);
+            if (f.exists()) f.delete();
+        }
 
         SharedPreferences.Editor e = context.getSharedPreferences("monitor", Context.MODE_PRIVATE).edit()
                 .putLong("frames_total", 0)
@@ -367,7 +395,12 @@ public class MonitorService extends Service {
                 .remove("last_key_state")
                 .remove("vehicle_mask")
                 .remove("vehicle_payload")
-                .remove("telemetry_last_ms");
+                .remove("telemetry_last_ms")
+                .remove("backend_probe_status")
+                .remove("backend_probe_summary")
+                .remove("backend_probe_combined")
+                .remove("backend_last_broadcast")
+                .remove("direct_deep_probe_summary");
 
         for (int i = 0; i < 13; i++) {
             e.remove("status_b" + i);
@@ -413,6 +446,7 @@ public class MonitorService extends Service {
         prefs.edit().putString("service_status", "остановлен").apply();
         if (executor != null) executor.shutdownNow();
         if (directReader != null) directReader.stop();
+        StockBackendProbe.stopBroadcastSniffer();
         mainHandler.removeCallbacks(overlayTick);
         removeOverlay();
         super.onDestroy();

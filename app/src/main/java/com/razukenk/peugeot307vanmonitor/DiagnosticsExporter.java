@@ -23,10 +23,10 @@ final class DiagnosticsExporter {
     static Uri export(Context context) throws Exception {
         SharedPreferences p = context.getSharedPreferences("monitor", Context.MODE_PRIVATE);
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String filename = "peugeot307_diagnostic_v010_" + stamp + ".txt";
+        String filename = "peugeot307_diagnostic_v011_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 CarInfo diagnostic v0.10 SAFE PROBE\n");
+        report.append("Peugeot 307 CarInfo diagnostic v0.11 STOCK BACKEND RESEARCH\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
@@ -74,7 +74,16 @@ final class DiagnosticsExporter {
         report.append("WRITE attempted: ").append(p.getBoolean("tty_probe_write_attempted", false)).append("\n");
         report.append("Verdict: ").append(p.getString("tty_probe_verdict", "(not run)")).append("\n\n");
 
-        report.append("[AUTO CANBUS BRIDGE - DISABLED IN v0.10]\n");
+        report.append("[STOCK BACKEND PROBE SUMMARY]\n");
+        report.append("Status: ").append(p.getString("backend_probe_status", "(not run)")).append("\n");
+        report.append("Summary:\n").append(p.getString("backend_probe_summary", "(none)")).append("\n");
+        report.append("Combined:\n").append(p.getString("backend_probe_combined", "(none)")).append("\n");
+        report.append("String candidates: ").append(p.getInt("backend_probe_string_count", 0)).append("\n");
+        report.append("Action candidates: ").append(p.getInt("backend_probe_action_count", 0)).append("\n");
+        report.append("Broadcast sniffer: ").append(p.getString("backend_broadcast_sniffer", "(not started)")).append("\n");
+        report.append("Last broadcast: ").append(p.getString("backend_last_broadcast", "(none)")).append("\n\n");
+
+        report.append("[AUTO CANBUS BRIDGE - DISABLED IN v0.11]\n");
         report.append("Enabled: ").append(p.getBoolean("bridge_enabled", false)).append("\n");
         report.append("Status: ").append(p.getString("bridge_status", "(none)")).append("\n");
         report.append("Capture: ").append(p.getString("bridge_capture_status", "(none)")).append("\n");
@@ -94,6 +103,8 @@ final class DiagnosticsExporter {
         report.append("Direct current CANBUS: ").append(p.getString("direct_current_canbus", "(none)")).append("\n");
         report.append("Exact error: ").append(p.getString("direct_exact_error", "(none)")).append("\n");
         report.append("Listener: ").append(p.getString("direct_listener", "unknown")).append("\n");
+        report.append("Reflection: ").append(p.getString("direct_reflection_status", "unknown")).append("\n");
+        report.append("Deep probe: ").append(p.getString("direct_deep_probe_summary", "(not run)")).append("\n");
         report.append("Key count: ").append(p.getInt("direct_key_count", 0)).append("\n");
         report.append("Last key: ").append(p.getString("direct_last_key", "(none)")).append("\n");
         report.append("Last value: ").append(p.getString("direct_last_value", "(none)")).append("\n");
@@ -147,6 +158,11 @@ final class DiagnosticsExporter {
             report.append("(empty)\n");
         }
 
+        appendFileSection(report, context, "[STOCK BACKEND PROBE FULL]", "stock_backend_probe.log");
+        appendFileSection(report, context, "[STOCK BROADCAST SNIFFER]", "stock_broadcasts.log");
+        appendFileSection(report, context, "[CARDATA API REFLECTION]", "cardata_api_reflection.log");
+        appendFileSection(report, context, "[CARDATA DEEP PROBE]", "cardata_deep_probe.log");
+
         byte[] data = report.toString().getBytes(StandardCharsets.UTF_8);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -173,6 +189,21 @@ final class DiagnosticsExporter {
             out.write(data);
         }
         return Uri.fromFile(outFile);
+    }
+
+    private static void appendFileSection(StringBuilder report, Context context, String title, String name) {
+        report.append("\n").append(title).append("\n");
+        File file = new File(context.getFilesDir(), name);
+        if (!file.exists()) {
+            report.append("(empty)\n");
+            return;
+        }
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            String line;
+            while ((line = br.readLine()) != null) report.append(line).append('\n');
+        } catch (Throwable t) {
+            report.append("(read error: ").append(t.getClass().getSimpleName()).append(")\n");
+        }
     }
 
     private DiagnosticsExporter() {}
