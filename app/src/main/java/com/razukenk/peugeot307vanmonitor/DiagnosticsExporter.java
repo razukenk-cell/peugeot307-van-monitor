@@ -23,10 +23,10 @@ final class DiagnosticsExporter {
     static Uri export(Context context) throws Exception {
         SharedPreferences p = context.getSharedPreferences("monitor", Context.MODE_PRIVATE);
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String filename = "peugeot307_diagnostic_v011_" + stamp + ".txt";
+        String filename = "peugeot307_diagnostic_v012_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 CarInfo diagnostic v0.11 STOCK BACKEND RESEARCH\n");
+        report.append("Peugeot 307 CarInfo diagnostic v0.12 STOCK BACKEND RESEARCH\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
@@ -83,7 +83,20 @@ final class DiagnosticsExporter {
         report.append("Broadcast sniffer: ").append(p.getString("backend_broadcast_sniffer", "(not started)")).append("\n");
         report.append("Last broadcast: ").append(p.getString("backend_last_broadcast", "(none)")).append("\n\n");
 
-        report.append("[AUTO CANBUS BRIDGE - DISABLED IN v0.11]\n");
+        report.append("[CAR_SERVER PASSIVE CALLBACK SNIFFER]\n");
+        report.append("Registered: ").append(p.getBoolean("car_server_registered", false)).append("\n");
+        report.append("Status: ").append(p.getString("car_server_status", "(not started)")).append("\n");
+        report.append("Descriptor: ").append(p.getString("car_server_descriptor", "(none)")).append("\n");
+        report.append("registerCallback: ").append(p.getString("car_server_register_result", "(none)")).append("\n");
+        report.append("setCallbackFilter[*]: ").append(p.getString("car_server_filter_result", "(none)")).append("\n");
+        report.append("Callback count: ").append(p.getLong("car_server_callback_count", 0)).append("\n");
+        report.append("Last action: ").append(p.getString("car_server_last_action", "(none)")).append("\n");
+        report.append("Last bundle: ").append(p.getString("car_server_last_bundle", "(none)")).append("\n");
+        report.append("onCallback transaction: ").append(p.getInt("car_server_callback_code", -1)).append("\n");
+        report.append("onCallbackOneway transaction: ").append(p.getInt("car_server_oneway_code", -1)).append("\n");
+        report.append("SAFETY: request/requestOneway NEVER called\n\n");
+
+        report.append("[AUTO CANBUS BRIDGE - DISABLED IN v0.12]\n");
         report.append("Enabled: ").append(p.getBoolean("bridge_enabled", false)).append("\n");
         report.append("Status: ").append(p.getString("bridge_status", "(none)")).append("\n");
         report.append("Capture: ").append(p.getString("bridge_capture_status", "(none)")).append("\n");
@@ -105,6 +118,8 @@ final class DiagnosticsExporter {
         report.append("Listener: ").append(p.getString("direct_listener", "unknown")).append("\n");
         report.append("Reflection: ").append(p.getString("direct_reflection_status", "unknown")).append("\n");
         report.append("Deep probe: ").append(p.getString("direct_deep_probe_summary", "(not run)")).append("\n");
+        report.append("DEF_GET_FLAGS: ").append(p.getInt("direct_def_get_flags", 0)).append("\n");
+        report.append("GET flags: ").append(p.getString("direct_get_flags", "(not reflected)")).append("\n");
         report.append("Key count: ").append(p.getInt("direct_key_count", 0)).append("\n");
         report.append("Last key: ").append(p.getString("direct_last_key", "(none)")).append("\n");
         report.append("Last value: ").append(p.getString("direct_last_value", "(none)")).append("\n");
@@ -162,6 +177,9 @@ final class DiagnosticsExporter {
         appendFileSection(report, context, "[STOCK BROADCAST SNIFFER]", "stock_broadcasts.log");
         appendFileSection(report, context, "[CARDATA API REFLECTION]", "cardata_api_reflection.log");
         appendFileSection(report, context, "[CARDATA DEEP PROBE]", "cardata_deep_probe.log");
+
+        appendFileSection(report, context, "[CAR_SERVER REGISTRATION / AIDL]", "car_server_probe.log");
+        appendFileSection(report, context, "[CAR_SERVER INCOMING CALLBACKS]", "car_server_callbacks.log");
 
         byte[] data = report.toString().getBytes(StandardCharsets.UTF_8);
 
