@@ -49,6 +49,7 @@ public class MonitorService extends Service {
     private int processedLines = 0;
     private String lastVehiclePayload = "";
     private DirectCarDataReader directReader;
+    private CarServerSniffer carServerSniffer;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private WindowManager windowManager;
@@ -75,6 +76,7 @@ public class MonitorService extends Service {
         prefs.edit().putString("service_status", "работает").apply();
 
         directReader = new DirectCarDataReader(this);
+        carServerSniffer = new CarServerSniffer(this);
         boolean direct = directReader.start();
         prefs.edit().putString("service_status",
                 direct ? "работает; DIRECT CarData подключён" : "работает; DIRECT недоступен, fallback").apply();
@@ -92,16 +94,25 @@ public class MonitorService extends Service {
             return START_NOT_STICKY;
         }
         if (intent != null && ACTION_BACKEND_PROBE.equals(intent.getAction())) {
-            prefs.edit().putString("backend_probe_status", "исследование запущено…").apply();
+            prefs.edit()
+                    .putString("backend_probe_status", "v0.12: исследование + car_server subscription запускаются…")
+                    .apply();
             if (executor != null) {
                 executor.execute(() -> {
                     try {
+                        if (carServerSniffer != null && carServerSniffer.isRegistered()) {
+                            carServerSniffer.stop();
+                        }
                         StockBackendProbe.Result stock = StockBackendProbe.run(this, true);
                         String carData = directReader != null && directReader.isConnected()
                                 ? directReader.runDeepProbe() : "CarData не подключён";
+                        String carServer = carServerSniffer == null
+                                ? "car_server sniffer unavailable"
+                                : carServerSniffer.start();
                         prefs.edit()
-                                .putString("backend_probe_status", "ГОТОВО")
-                                .putString("backend_probe_combined", stock.summary + "\n" + carData)
+                                .putString("backend_probe_status", "ГОТОВО — PASSIVE SNIFF ACTIVE")
+                                .putString("backend_probe_combined",
+                                        stock.summary + "\n" + carData + "\n" + carServer)
                                 .putLong("backend_probe_done_ms", System.currentTimeMillis())
                                 .apply();
                     } catch (Throwable t) {
@@ -377,9 +388,10 @@ public class MonitorService extends Service {
         if (capture.exists()) capture.delete();
         File direct = new File(context.getFilesDir(), "direct_car_data.log");
         if (direct.exists()) direct.delete();
-        String[] v011 = {"stock_backend_probe.log", "stock_broadcasts.log",
-                "cardata_deep_probe.log", "cardata_api_reflection.log"};
-        for (String name : v011) {
+        String[] v012 = {"stock_backend_probe.log", "stock_broadcasts.log",
+                "cardata_deep_probe.log", "cardata_api_reflection.log",
+                "car_server_probe.log", "car_server_callbacks.log"};
+        for (String name : v012) {
             File f = new File(context.getFilesDir(), name);
             if (f.exists()) f.delete();
         }
@@ -400,7 +412,15 @@ public class MonitorService extends Service {
                 .remove("backend_probe_summary")
                 .remove("backend_probe_combined")
                 .remove("backend_last_broadcast")
-                .remove("direct_deep_probe_summary");
+                .remove("direct_deep_probe_summary")
+                .remove("car_server_status")
+                .remove("car_server_registered")
+                .remove("car_server_register_result")
+                .remove("car_server_filter_result")
+                .remove("car_server_callback_count")
+                .remove("car_server_last_action")
+                .remove("car_server_last_bundle")
+                .remove("car_server_last_callback");
 
         for (int i = 0; i < 13; i++) {
             e.remove("status_b" + i);
@@ -445,6 +465,7 @@ public class MonitorService extends Service {
     public void onDestroy() {
         prefs.edit().putString("service_status", "остановлен").apply();
         if (executor != null) executor.shutdownNow();
+        if (carServerSniffer != null) carServerSniffer.stop();
         if (directReader != null) directReader.stop();
         StockBackendProbe.stopBroadcastSniffer();
         mainHandler.removeCallbacks(overlayTick);
