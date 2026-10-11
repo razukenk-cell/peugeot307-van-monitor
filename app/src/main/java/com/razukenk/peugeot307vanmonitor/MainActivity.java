@@ -60,13 +60,13 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("monitor", Context.MODE_PRIVATE);
 
-        // v0.10 safety reset FIRST: an upgrade from v0.9 may leave bridge_enabled=true.
+        // v0.12 safety reset FIRST: an upgrade from v0.9 may leave bridge_enabled=true.
         // Force AUTO bridge off before starting any app component/UI.
         prefs.edit()
                 .putBoolean("bridge_enabled", false)
                 .putBoolean("bridge_pending", false)
-                .putString("bridge_status", "v0.11 SAFE: AUTO bridge отключён")
-                .putString("bridge_capture_status", "v0.11 SAFE: автоклик отсутствует")
+                .putString("bridge_status", "v0.12 SAFE: AUTO bridge отключён")
+                .putString("bridge_capture_status", "v0.12 SAFE: автоклик отсутствует")
                 .apply();
 
         buildUi();
@@ -85,7 +85,7 @@ public class MainActivity extends Activity {
         root.setPadding(18, 10, 18, 20);
         scroll.addView(root);
 
-        TextView title = text("PEUGEOT 307 CARINFO  v0.11 BACKEND RESEARCH", 24, Color.WHITE);
+        TextView title = text("PEUGEOT 307 CARINFO  v0.12 CAR_SERVER SNIFFER", 24, Color.WHITE);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
 
@@ -94,14 +94,14 @@ public class MainActivity extends Activity {
         connection.setPadding(0, 3, 0, 7);
         root.addView(connection);
 
-        Button probeButton = button("1. ИССЛЕДОВАТЬ ШТАТНЫЙ CANBUS BACKEND", v -> runBackendProbe());
+        Button probeButton = button("1. ЗАПУСТИТЬ PASSIVE CAR_SERVER SNIFF", v -> runBackendProbe());
         probeButton.setTextSize(17);
         probeButton.setMinHeight(66);
         root.addView(probeButton);
 
         TextView safety = text(
-                "PASSIVE/READ-ONLY: PackageManager + stock APK strings + CarData getters/listener + Binder descriptor. " +
-                "UART не открывается, сервисы не запускаются, broadcast не отправляется.",
+                "PASSIVE/READ-ONLY: подписка на car_server ICallback[*] + CarData listener. " +
+                "IService.request/requestOneway НЕ вызываются; UART не открывается и CAN/VAN команды не отправляются.",
                 13, Color.rgb(170, 220, 170));
         safety.setGravity(Gravity.CENTER_HORIZONTAL);
         safety.setPadding(0, 2, 0, 8);
@@ -130,9 +130,9 @@ public class MainActivity extends Activity {
         dash.addView(right, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.85f));
 
-        backend = card(right, "v0.11 Stock backend");
+        backend = card(right, "v0.12 car_server + Stock backend");
         ttyProbe = card(right, "/dev/ttyCanbus permissions");
-        bridge = card(right, "Stock bridge (v0.10 disabled)");
+        bridge = card(right, "Stock UI bridge (disabled)");
         direct = card(right, "CarData (диагностика)");
         telemetry = card(right, "Данные автомобиля");
         steering = card(right, "Подрулевой пульт");
@@ -153,7 +153,7 @@ public class MainActivity extends Activity {
         row1.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(row1);
 
-        row1.addView(button("Исследовать backend", v -> runBackendProbe()),
+        row1.addView(button("START passive sniff", v -> runBackendProbe()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         row1.addView(button("Экспорт диагностики", v -> exportDiagnostics()),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -174,11 +174,11 @@ public class MainActivity extends Activity {
         }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView help = text(
-                "ТЕСТ v0.11: нажмите «ИССЛЕДОВАТЬ ШТАТНЫЙ CANBUS BACKEND». Когда статус станет ГОТОВО, " +
-                "в течение 1–2 минут по очереди откройте/закройте каждую дверь и багажник, нажмите кнопки руля " +
-                "(Volume+/−, Source, вверх/вниз, trip), включите/выключите свет. Broadcast/CarData listener остаются только слушателями.\n\n" +
-                "После теста нажмите «Экспорт диагностики». Для максимально глубокого анализа можно также нажать " +
-                "«Экспорт штатного CANBUS APK» и прислать base.apk вместе с диагностикой. Никаких CAN/VAN команд v0.11 не передаёт.",
+                "ТЕСТ v0.12: нажмите «START PASSIVE CAR_SERVER SNIFF». Дождитесь статуса " +
+                "«ГОТОВО — PASSIVE SNIFF ACTIVE». Затем по очереди откройте и закройте каждую дверь и багажник; " +
+                "нажмите Volume+/−, Source, вверх/вниз и trip; включите/выключите свет. Делайте действия с паузой 1–2 секунды.\n\n" +
+                "v0.12 регистрирует только ICallback и фильтр [*]. Методы car_server request/requestOneway намеренно не вызываются. " +
+                "После теста нажмите «Экспорт диагностики» и пришлите diagnostic_v012. CAN/VAN команды приложение не передаёт.",
                 13, Color.LTGRAY);
         help.setPadding(0, 8, 0, 2);
         root.addView(help);
@@ -218,12 +218,12 @@ public class MainActivity extends Activity {
     }
 
     private void runBackendProbe() {
-        if (backend != null) backend.setText("Исследование запущено…\nне закрывайте приложение 10–20 сек");
+        if (backend != null) backend.setText("Запускаю passive subscription…\nждите статус ACTIVE");
         try {
             Intent i = new Intent(this, MonitorService.class).setAction(MonitorService.ACTION_BACKEND_PROBE);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
             else startService(i);
-            Toast.makeText(this, "v0.11: пассивное исследование backend запущено", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "v0.12: passive car_server sniffer запускается", Toast.LENGTH_LONG).show();
         } catch (Throwable t) {
             Toast.makeText(this, "Ошибка запуска probe: " + t.getMessage(), Toast.LENGTH_LONG).show();
         }
@@ -243,7 +243,7 @@ public class MainActivity extends Activity {
     private void startAutoCanbus() {
         StockCanbusBridge.disable(this);
         Toast.makeText(this,
-                "v0.11 SAFE: AUTO CANBUS отключён.",
+                "v0.12 SAFE: AUTO CANBUS отключён.",
                 Toast.LENGTH_LONG).show();
     }
 
@@ -412,10 +412,16 @@ public class MainActivity extends Activity {
             String status = prefs.getString("backend_probe_status", "ещё не запускалось");
             String combined = prefs.getString("backend_probe_combined",
                     prefs.getString("backend_probe_summary", ""));
-            String lastBroadcast = prefs.getString("backend_last_broadcast", "(пока нет)");
+            String carServer = prefs.getString("car_server_status", "(car_server not started)");
+            long callbacks = prefs.getLong("car_server_callback_count", 0);
+            String lastAction = prefs.getString("car_server_last_action", "(none)");
+            String lastBundle = prefs.getString("car_server_last_bundle", "(none)");
             backend.setText("status=" + status +
                     (combined == null || combined.isEmpty() ? "" : "\n" + combined) +
-                    "\nlast broadcast: " + lastBroadcast);
+                    "\ncar_server: " + carServer +
+                    "\ncallbacks=" + callbacks +
+                    "\nlast action=" + lastAction +
+                    "\nlast bundle=" + lastBundle);
         }
 
         if (ttyProbe != null) {
@@ -423,7 +429,7 @@ public class MainActivity extends Activity {
         }
 
         bridge.setText(
-                prefs.getString("bridge_status", "v0.11 SAFE: выключен") +
+                prefs.getString("bridge_status", "v0.12 SAFE: выключен") +
                 "\nCapture: " + prefs.getString("bridge_capture_status", "—") +
                 "\nRAW: " + (bridgeAge < 1500 ? "АКТИВЕН" : "нет свежих кадров") +
                 "\nОшибка: " + prefs.getString("bridge_error", "—"));
