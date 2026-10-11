@@ -806,3 +806,162 @@ Stock CANBUS остаётся владельцем UART, а CarInfo читает
 ## 30. Текущее состояние в одном абзаце
 
 На текущий момент лучший доказанный data path такой: **RP5 → /dev/ttyCanbus → stock com.cartech.service.canbus → DebugActivity Capture → RAW 2E frames → CarInfo parser**. CarData общий API существует, но нужные CANBUS properties для sideloaded APK не читаются. v0.9 автоматизирует запуск stock DebugActivity и реальный Capture switch через Accessibility и показывает собственный UI только после появления RAW. Полный standalone clone возможен только после проверки, может ли обычный APK безопасно открыть /dev/ttyCanbus без system UID. Если нет — нужно либо использовать stock process как backend, либо патчить системный APK/прошивку.
+
+
+---
+
+## 31. Реальный тест v0.10: доступ к /dev/ttyCanbus закрыт
+
+v0.10 SAFE PROBE подтвердил без открытия UART:
+
+- `/dev/ttyCanbus` существует;
+- это character device;
+- mode `0660`;
+- UID/GID = `1000/1000` (system);
+- обычный sideloaded CarInfo получает `R_OK=false`, `W_OK=false`;
+- `Os.access(...)` возвращает `EACCES`.
+
+Следствие: standalone clone, который сам читает UART как обычный APK, без root/system UID/platform signing не является рабочим no-root направлением.
+
+---
+
+## 32. Реальный тест v0.11 и reverse engineering stock carCanbus.apk
+
+Пользователь экспортировал настоящий:
+
+`/system/app/carCanbus/carCanbus.apk`
+
+Штатная версия:
+
+- package `com.cartech.service.canbus`;
+- version `2024-11-12`;
+- UID 1000;
+- `sharedUserId=android.uid.system`.
+
+### Binder registry
+
+На магнитоле доступны системные Binder services:
+
+- `car_server -> android.cartech.aidl.common.IService`;
+- `cardata -> android.cartech.cardata.ICarData`;
+- `car_video_in -> com.cartech.lib.core.videoin.IVideoInManager`.
+
+Экспортированный `CanbusService` действительно bindable из обычного APK с `bindService(flags=0)`, но его Binder — фактически пустой `android.os.Binder` без полезного AIDL descriptor. Поэтому bind к самому CanbusService не даёт поток данных.
+
+### Важная коррекция CarData API
+
+Reverse engineering показал, что:
+
+`CarData.getInt(String,int,int)`
+
+означает:
+
+`getInt(key, defaultValue, flags)`
+
+а НЕ `(key,index,default)`.
+
+А:
+
+`getString(String,int)`
+
+означает:
+
+`getString(key, flags)`.
+
+Поэтому перебор индексов 0..15 из v0.11 был диагностической ошибкой и удалён в v0.12.
+
+### Почему state.canbus.door_state.i отсутствует именно на PSA_01_SP
+
+Ключ `state.canbus.door_state.i` в stock APK реальный. Общий helper `Lgg/k;->n(Lig/c0;)V` собирает door bitmask и публикует его через `CarData.setInt(...)`.
+
+Другие CANBUS реализации вызывают этот helper.
+
+Но выбранный профиль `PSA_01_SP` фабрика связывает с runtime handler `Lge/m`.
+
+В PSA handler:
+
+- raw packet path проходит через `Lge/m.h(byte[])`;
+- внутреннее состояние дверей хранится в `Lge/u.g : Lig/c0`;
+- при изменении дверей `Lge/m.i(...)` вызывает `Lgg/l.f()` — штатный FloatManager;
+- FloatManager показывает/скрывает штатное окно дверей;
+- `Lgg/k.n(...)`, который публикует `state.canbus.door_state.i`, в этой PSA ветке НЕ вызывается.
+
+Следствие:
+
+**PSA_01_SP декодирует двери правильно, но держит их внутри stock CANBUS процесса и отдаёт в штатный popup, не публикуя стандартный CarData door_state.**
+
+Это полностью объясняет одновременно:
+
+- штатная графика дверей работает;
+- RAW кадры содержат двери;
+- `CarData.hasKey("state.canbus.door_state.i") == false`;
+- CarData listener не получает door_state.
+
+Это не ошибка имени ключа и не permission problem конкретного getter-а.
+
+---
+
+## 33. car_server — следующий лучший no-root backend
+
+В stock APK обнаружен wrapper над:
+
+`android.cartech.aidl.common.IService`
+
+который получает Binder:
+
+`ServiceManager.getService("car_server")`.
+
+IService имеет методы:
+
+- `registerCallback(String, ICallback)`;
+- `setCallbackFilter(ICallback, String[])`;
+- `unregisterCallback(ICallback)`;
+- `request(String, Bundle)`;
+- `requestOneway(String, Bundle)`.
+
+ICallback имеет:
+
+- `onCallback(String, Bundle)`;
+- `onCallbackOneway(String, Bundle)`.
+
+Stock framework использует callback registration и KeyFilter для подписок.
+
+Для CarInfo разрешено исследовать только subscription path:
+
+- registerCallback;
+- setCallbackFilter;
+- входящие callbacks;
+- unregisterCallback.
+
+**Никогда не вызывать `request()` / `requestOneway()` в текущей read-only фазе**, потому что stock APK использует их для активных команд (audio/backcar/etc.).
+
+---
+
+## 34. Текущая v0.12 — PASSIVE car_server callback sniffer
+
+v0.12:
+
+1. получает только существующий Binder `car_server`;
+2. через reflection создаёт proxy `IService`;
+3. регистрирует локальный raw Binder как `ICallback`;
+4. ставит callback filter `["*"]`;
+5. логирует только входящие `action + Bundle`;
+6. не вызывает `request` и `requestOneway`;
+7. исправляет семантику CarData getters на `defaultValue + flags`;
+8. отражает реальные `DEF_GET_FLAGS` и GET flags;
+9. экспортирует `car_server_probe.log` и `car_server_callbacks.log` в общий diagnostic v0.12;
+10. при остановке выполняет только `unregisterCallback`.
+
+Тест:
+
+- запустить v0.12;
+- нажать `START PASSIVE CAR_SERVER SNIFF`;
+- дождаться `ГОТОВО — PASSIVE SNIFF ACTIVE`;
+- с паузой 1–2 секунды открыть/закрыть каждую дверь и багажник;
+- нажать Volume+/−, Source, вверх/вниз, trip;
+- включить/выключить свет;
+- экспортировать `peugeot307_diagnostic_v012_*.txt`.
+
+Если car_server callbacks содержат внутренние PSA события/Bundle со значениями — это предпочтительный backend для собственной оболочки.
+
+Если callbacks молчат именно для дверей, следующий безопасный fallback: пассивно наблюдать штатный FloatManager/его внутренние системные события либо искать ещё один vendor service. UART и CAN/VAN transmit по-прежнему не трогаем.
