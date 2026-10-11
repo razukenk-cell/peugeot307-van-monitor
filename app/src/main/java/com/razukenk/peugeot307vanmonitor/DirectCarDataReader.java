@@ -47,13 +47,16 @@ final class DirectCarDataReader {
     private Method getFloat;
     private Method getFloatArray;
     private Method getInt;
-    private Method getIntIndexed;
+    private Method getIntFlags;
     private Method getIntArray;
     private Method getLong;
     private Method getLongArray;
     private Method getString;
-    private Method getStringIndexed;
+    private Method getStringFlags;
     private Method getStringArray;
+
+    private int defaultGetFlags = 0;
+    private String getFlagsSummary = "(not reflected)";
 
     private final Set<String> knownKeys = new LinkedHashSet<>();
     private final ArrayDeque<String> recent = new ArrayDeque<>();
@@ -99,23 +102,30 @@ final class DirectCarDataReader {
             getFloat = find(carDataClass, "getFloat", String.class, float.class);
             getFloatArray = find(carDataClass, "getFloatArray", String.class);
 
-            // There are TWO integer APIs on this firmware:
-            // getInt(key, default) for common global state and
-            // getInt(key, index, default) for CANBUS values.
+            // Reverse-engineered from stock carCanbus.apk:
+            // getInt(key, defaultValue) and getInt(key, defaultValue, flags).
+            // The third argument is FLAGS, not an index.
             getInt = find(carDataClass, "getInt", String.class, int.class);
-            getIntIndexed = find(carDataClass, "getInt", String.class, int.class, int.class);
+            getIntFlags = find(carDataClass, "getInt", String.class, int.class, int.class);
             getIntArray = find(carDataClass, "getIntArray", String.class);
 
             getLong = find(carDataClass, "getLong", String.class, long.class);
             getLongArray = find(carDataClass, "getLongArray", String.class);
 
-            // Same story for strings: CANBUS properties use getString(key, index).
+            // getString(key) and getString(key, flags). The second argument is FLAGS.
             getString = find(carDataClass, "getString", String.class);
-            getStringIndexed = find(carDataClass, "getString", String.class, int.class);
+            getStringFlags = find(carDataClass, "getString", String.class, int.class);
             getStringArray = find(carDataClass, "getStringArray", String.class);
 
             removeListener = find(carDataClass, "removeListener",
                     Class.forName("android.cartech.cardata.CarData$CarDataListener"));
+
+            defaultGetFlags = readStaticInt(carDataClass, "DEF_GET_FLAGS", 0);
+            getFlagsSummary = reflectGetFlags(carDataClass);
+            prefs.edit()
+                    .putInt("direct_def_get_flags", defaultGetFlags)
+                    .putString("direct_get_flags", getFlagsSummary)
+                    .apply();
 
             reflectCarDataApi(carDataClass);
             discoverKeys();
@@ -126,12 +136,13 @@ final class DirectCarDataReader {
                     .putInt("direct_key_count", knownKeys.size())
                     .putLong("direct_connected_ms", System.currentTimeMillis())
                     .putBoolean("direct_exact_api",
-                            getIntIndexed != null && getStringIndexed != null)
+                            getIntFlags != null && getStringFlags != null)
                     .apply();
 
             append("# DIRECT CarData connected; keys=" + knownKeys.size()
-                    + " indexedInt=" + (getIntIndexed != null)
-                    + " indexedString=" + (getStringIndexed != null));
+                    + " getIntWithFlags=" + (getIntFlags != null)
+                    + " getStringWithFlags=" + (getStringFlags != null)
+                    + " DEF_GET_FLAGS=" + defaultGetFlags);
 
             pollExactCanbus();
             snapshotInteresting();
@@ -362,23 +373,25 @@ final class DirectCarDataReader {
     }
 
     private int getCanInt(String key, int def) {
-        if (carData == null) return def;
-
-        if (getIntIndexed != null) {
-            try {
-                Object v = getIntIndexed.invoke(carData, key, 0, def);
-                if (v instanceof Integer) return (Integer) v;
-            } catch (Throwable t) {
-                prefs.edit().putString("direct_exact_error",
-                        key + ": " + t.getClass().getSimpleName()).apply();
-            }
-        }
+        if (carData == null || !keyExists(key)) return def;
 
         if (getInt != null) {
             try {
                 Object v = getInt.invoke(carData, key, def);
                 if (v instanceof Integer) return (Integer) v;
-            } catch (Throwable ignored) {
+            } catch (Throwable t) {
+                prefs.edit().putString("direct_exact_error",
+                        key + ": " + rootError(t)).apply();
+            }
+        }
+
+        if (getIntFlags != null) {
+            try {
+                Object v = getIntFlags.invoke(carData, key, def, defaultGetFlags);
+                if (v instanceof Integer) return (Integer) v;
+            } catch (Throwable t) {
+                prefs.edit().putString("direct_exact_error",
+                        key + ": " + rootError(t)).apply();
             }
         }
 
@@ -386,33 +399,45 @@ final class DirectCarDataReader {
     }
 
     private String getCanString(String key) {
-        if (carData == null) return null;
-
-        if (getStringIndexed != null) {
-            try {
-                Object v = getStringIndexed.invoke(carData, key, 0);
-                if (v != null) {
-                    String s = String.valueOf(v);
-                    if (!s.isEmpty()) return s;
-                }
-            } catch (Throwable t) {
-                prefs.edit().putString("direct_exact_error",
-                        key + ": " + t.getClass().getSimpleName()).apply();
-            }
-        }
+        if (carData == null || !keyExists(key)) return null;
 
         if (getString != null) {
             try {
                 Object v = getString.invoke(carData, key);
                 if (v != null) {
-                    String s = String.valueOf(v);
-                    if (!s.isEmpty()) return s;
+                    String text = String.valueOf(v);
+                    if (!text.isEmpty()) return text;
                 }
-            } catch (Throwable ignored) {
+            } catch (Throwable t) {
+                prefs.edit().putString("direct_exact_error",
+                        key + ": " + rootError(t)).apply();
+            }
+        }
+
+        if (getStringFlags != null) {
+            try {
+                Object v = getStringFlags.invoke(carData, key, defaultGetFlags);
+                if (v != null) {
+                    String text = String.valueOf(v);
+                    if (!text.isEmpty()) return text;
+                }
+            } catch (Throwable t) {
+                prefs.edit().putString("direct_exact_error",
+                        key + ": " + rootError(t)).apply();
             }
         }
 
         return null;
+    }
+
+    private boolean keyExists(String key) {
+        if (hasKey == null) return true;
+        try {
+            Object v = hasKey.invoke(carData, key);
+            return !(v instanceof Boolean) || (Boolean) v;
+        } catch (Throwable ignored) {
+            return true;
+        }
     }
 
     private int genericDoorToRp5Mask(int generic) {
@@ -567,9 +592,11 @@ final class DirectCarDataReader {
     synchronized String runDeepProbe() {
         if (carData == null) return "CarData не подключён";
         StringBuilder out = new StringBuilder();
-        out.append("# Peugeot 307 CarInfo v0.11 CarData deep read-only probe\n");
+        out.append("# Peugeot 307 CarInfo v0.12 CarData deep read-only probe\n");
         out.append("# Only getter/listener/reflection calls; no setters are invoked\n");
         out.append("time=").append(new Date()).append('\n');
+        out.append("DEF_GET_FLAGS=").append(defaultGetFlags).append('\n');
+        out.append("GET FLAGS: ").append(getFlagsSummary).append('\n');
 
         LinkedHashSet<String> keys = new LinkedHashSet<>();
         keys.add(KEY_DOOR);
@@ -611,25 +638,13 @@ final class DirectCarDataReader {
                 try { sb.append(" getInt=").append(getInt.invoke(carData, key, sentinel)); }
                 catch (Throwable t) { sb.append(" getIntErr=").append(rootError(t)); }
             }
-            if (getIntIndexed != null) {
-                sb.append(" indexed{");
-                String firstErr = null;
-                boolean any = false;
-                for (int i = 0; i < 16; i++) {
-                    try {
-                        Object v = getIntIndexed.invoke(carData, key, i, sentinel);
-                        if (v instanceof Integer && ((Integer) v) != sentinel) {
-                            if (any) sb.append(',');
-                            sb.append(i).append('=').append(v);
-                            any = true;
-                        }
-                    } catch (Throwable t) {
-                        if (firstErr == null) firstErr = rootError(t);
-                    }
+            if (getIntFlags != null) {
+                try {
+                    sb.append(" getInt(default,DEF_FLAGS)=")
+                            .append(getIntFlags.invoke(carData, key, sentinel, defaultGetFlags));
+                } catch (Throwable t) {
+                    sb.append(" getIntFlagsErr=").append(rootError(t));
                 }
-                if (!any) sb.append("none");
-                if (firstErr != null) sb.append(" err=").append(firstErr);
-                sb.append('}');
             }
             if (getIntArray != null) {
                 try { sb.append(" intArray=").append(arrayToString(getIntArray.invoke(carData, key))); }
@@ -640,26 +655,13 @@ final class DirectCarDataReader {
                 try { sb.append(" getString=").append(String.valueOf(getString.invoke(carData, key))); }
                 catch (Throwable t) { sb.append(" getStringErr=").append(rootError(t)); }
             }
-            if (getStringIndexed != null) {
-                sb.append(" indexed{");
-                String firstErr = null;
-                boolean any = false;
-                for (int i = 0; i < 16; i++) {
-                    try {
-                        Object v = getStringIndexed.invoke(carData, key, i);
-                        String x = v == null ? "" : String.valueOf(v);
-                        if (!x.isEmpty()) {
-                            if (any) sb.append(',');
-                            sb.append(i).append('=').append(x);
-                            any = true;
-                        }
-                    } catch (Throwable t) {
-                        if (firstErr == null) firstErr = rootError(t);
-                    }
+            if (getStringFlags != null) {
+                try {
+                    sb.append(" getString(DEF_FLAGS)=")
+                            .append(String.valueOf(getStringFlags.invoke(carData, key, defaultGetFlags)));
+                } catch (Throwable t) {
+                    sb.append(" getStringFlagsErr=").append(rootError(t));
                 }
-                if (!any) sb.append("none");
-                if (firstErr != null) sb.append(" err=").append(firstErr);
-                sb.append('}');
             }
             if (getStringArray != null) {
                 try { sb.append(" stringArray=").append(arrayToString(getStringArray.invoke(carData, key))); }
@@ -673,7 +675,7 @@ final class DirectCarDataReader {
 
     private void reflectCarDataApi(Class<?> carDataClass) {
         StringBuilder out = new StringBuilder();
-        out.append("# CarData reflection v0.11\n");
+        out.append("# CarData reflection v0.12\n");
         Class<?>[] classes;
         try {
             classes = new Class<?>[]{
@@ -700,8 +702,35 @@ final class DirectCarDataReader {
                 }
             } catch (Throwable t) { out.append("  fields error ").append(rootError(t)).append('\n'); }
         }
+        out.append("GET FLAGS: ").append(getFlagsSummary).append('\n');
         writeReflection(out.toString());
-        prefs.edit().putString("direct_reflection_status", "CarData API reflection записан").apply();
+        prefs.edit().putString("direct_reflection_status", "CarData API reflection v0.12 записан").apply();
+    }
+
+    private static int readStaticInt(Class<?> cls, String name, int fallback) {
+        try {
+            Field f = cls.getDeclaredField(name);
+            f.setAccessible(true);
+            return f.getInt(null);
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
+    private static String reflectGetFlags(Class<?> cls) {
+        StringBuilder sb = new StringBuilder();
+        for (String name : new String[]{"DEF_GET_FLAGS", "FLAG_GET_DEFAULT",
+                "FLAG_GET_DATA_NOT_EXIST_EXCEPTION"}) {
+            if (sb.length() > 0) sb.append(", ");
+            try {
+                Field f = cls.getDeclaredField(name);
+                f.setAccessible(true);
+                sb.append(name).append('=').append(f.getInt(null));
+            } catch (Throwable t) {
+                sb.append(name).append("=<unavailable>");
+            }
+        }
+        return sb.toString();
     }
 
     private static String describeArgs(Object[] args) {
