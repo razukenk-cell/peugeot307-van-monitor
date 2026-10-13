@@ -23,10 +23,10 @@ final class DiagnosticsExporter {
     static Uri export(Context context) throws Exception {
         SharedPreferences p = context.getSharedPreferences("monitor", Context.MODE_PRIVATE);
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String filename = "peugeot307_diagnostic_v012_" + stamp + ".txt";
+        String filename = "peugeot307_diagnostic_v013_" + stamp + ".txt";
 
         StringBuilder report = new StringBuilder();
-        report.append("Peugeot 307 CarInfo diagnostic v0.12 STOCK BACKEND RESEARCH\n");
+        report.append("Peugeot 307 CarInfo diagnostic v0.13 STOCK BACKEND RESEARCH\n");
         report.append("Generated: ").append(new Date()).append("\n\n");
 
         report.append("[DEVICE]\n");
@@ -87,6 +87,7 @@ final class DiagnosticsExporter {
         report.append("Registered: ").append(p.getBoolean("car_server_registered", false)).append("\n");
         report.append("Status: ").append(p.getString("car_server_status", "(not started)")).append("\n");
         report.append("Descriptor: ").append(p.getString("car_server_descriptor", "(none)")).append("\n");
+        report.append("AIDL loader: ").append(p.getString("car_server_aidl_loader", "(none)")).append("\n");
         report.append("registerCallback: ").append(p.getString("car_server_register_result", "(none)")).append("\n");
         report.append("setCallbackFilter[*]: ").append(p.getString("car_server_filter_result", "(none)")).append("\n");
         report.append("Callback count: ").append(p.getLong("car_server_callback_count", 0)).append("\n");
@@ -96,7 +97,7 @@ final class DiagnosticsExporter {
         report.append("onCallbackOneway transaction: ").append(p.getInt("car_server_oneway_code", -1)).append("\n");
         report.append("SAFETY: request/requestOneway NEVER called\n\n");
 
-        report.append("[AUTO CANBUS BRIDGE - DISABLED IN v0.12]\n");
+        report.append("[AUTO CANBUS BRIDGE - DISABLED IN v0.13]\n");
         report.append("Enabled: ").append(p.getBoolean("bridge_enabled", false)).append("\n");
         report.append("Status: ").append(p.getString("bridge_status", "(none)")).append("\n");
         report.append("Capture: ").append(p.getString("bridge_capture_status", "(none)")).append("\n");
