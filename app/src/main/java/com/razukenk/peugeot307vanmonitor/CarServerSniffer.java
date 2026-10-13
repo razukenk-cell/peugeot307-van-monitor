@@ -2,6 +2,8 @@ package com.razukenk.peugeot307vanmonitor;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -21,8 +23,10 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.Set;
 
+import dalvik.system.PathClassLoader;
+
 /**
- * v0.12 passive listener for the vendor car_server Binder.
+ * v0.13 passive listener for the vendor car_server Binder.
  *
  * Safety contract:
  * - calls only getService(), registerCallback(), setCallbackFilter(), unregisterCallback();
@@ -33,6 +37,7 @@ import java.util.Set;
  */
 final class CarServerSniffer {
     private static final String SERVICE_NAME = "car_server";
+    private static final String STOCK_PACKAGE = "com.cartech.service.canbus";
     private static final String SERVICE_DESCRIPTOR = "android.cartech.aidl.common.IService";
     private static final String CALLBACK_DESCRIPTOR = "android.cartech.aidl.common.ICallback";
 
@@ -56,7 +61,7 @@ final class CarServerSniffer {
         }
 
         StringBuilder diag = new StringBuilder();
-        diag.append("# Peugeot 307 CarInfo v0.12 car_server passive callback sniffer\n");
+        diag.append("# Peugeot 307 CarInfo v0.13 car_server passive callback sniffer\n");
         diag.append("# ALLOWED: registerCallback, setCallbackFilter, unregisterCallback only\n");
         diag.append("# FORBIDDEN/NOT CALLED: request, requestOneway, UART open/read/write, CarData setters\n");
         diag.append("time=").append(new Date()).append('\n');
@@ -74,14 +79,15 @@ final class CarServerSniffer {
             diag.append("serviceBinder descriptor=").append(safeDescriptor(serviceBinder))
                     .append(" alive=").append(serviceBinder.isBinderAlive()).append('\n');
 
-            Class<?> serviceInterface = Class.forName(SERVICE_DESCRIPTOR);
-            Class<?> serviceStub = Class.forName(SERVICE_DESCRIPTOR + "$Stub");
+            ClassLoader vendorLoader = loadVendorAidlClassLoader(diag);
+            Class<?> serviceInterface = Class.forName(SERVICE_DESCRIPTOR, true, vendorLoader);
+            Class<?> serviceStub = Class.forName(SERVICE_DESCRIPTOR + "$Stub", true, vendorLoader);
             Method asInterface = serviceStub.getMethod("asInterface", IBinder.class);
             service = asInterface.invoke(null, serviceBinder);
             if (service == null) throw new IllegalStateException("IService.Stub.asInterface returned null");
 
-            Class<?> callbackInterface = Class.forName(CALLBACK_DESCRIPTOR);
-            Class<?> callbackStub = Class.forName(CALLBACK_DESCRIPTOR + "$Stub");
+            Class<?> callbackInterface = Class.forName(CALLBACK_DESCRIPTOR, true, vendorLoader);
+            Class<?> callbackStub = Class.forName(CALLBACK_DESCRIPTOR + "$Stub", true, vendorLoader);
 
             int syncCode = transactionCode(callbackStub, "TRANSACTION_onCallback", IBinder.FIRST_CALL_TRANSACTION);
             int onewayCode = transactionCode(callbackStub, "TRANSACTION_onCallbackOneway",
@@ -96,7 +102,7 @@ final class CarServerSniffer {
 
             callbackBinder = new RawCallbackBinder(this, syncCode, onewayCode);
             ClassLoader loader = callbackInterface.getClassLoader();
-            if (loader == null) loader = context.getClassLoader();
+            if (loader == null) loader = vendorLoader;
             callbackProxy = Proxy.newProxyInstance(
                     loader,
                     new Class<?>[]{callbackInterface},
@@ -119,6 +125,14 @@ final class CarServerSniffer {
             Method register = serviceInterface.getMethod("registerCallback", String.class, callbackInterface);
             Method setFilter = serviceInterface.getMethod("setCallbackFilter", callbackInterface, String[].class);
             unregisterCallback = serviceInterface.getMethod("unregisterCallback", callbackInterface);
+
+            write("car_server_callbacks.log", "", false);
+            prefs.edit()
+                    .putLong("car_server_callback_count", 0)
+                    .remove("car_server_last_action")
+                    .remove("car_server_last_bundle")
+                    .remove("car_server_last_callback")
+                    .apply();
 
             String client = "Peugeot307CarInfo-" + Process.myPid();
             Object regResult = register.invoke(service, client, callbackProxy);
@@ -210,6 +224,59 @@ final class CarServerSniffer {
                 .putString("car_server_last_bundle", extras)
                 .putString("car_server_last_callback", row)
                 .apply();
+    }
+
+    private ClassLoader loadVendorAidlClassLoader(StringBuilder diag) throws Exception {
+        Throwable packageContextError = null;
+
+        try {
+            Context stock = context.createPackageContext(
+                    STOCK_PACKAGE,
+                    Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
+            ClassLoader loader = stock.getClassLoader();
+            if (loader != null) {
+                Class.forName(SERVICE_DESCRIPTOR, false, loader);
+                Class.forName(CALLBACK_DESCRIPTOR, false, loader);
+                diag.append("AIDL loader=PackageContext classLoader=")
+                        .append(String.valueOf(loader)).append('\n');
+                prefs.edit().putString("car_server_aidl_loader",
+                        "PackageContext: " + String.valueOf(loader)).apply();
+                return loader;
+            }
+        } catch (Throwable t) {
+            packageContextError = root(t);
+            diag.append("PackageContext loader failed=")
+                    .append(error(packageContextError)).append('\n');
+        }
+
+        PackageManager pm = context.getPackageManager();
+        ApplicationInfo ai = pm.getApplicationInfo(STOCK_PACKAGE, 0);
+        if (ai.sourceDir == null || ai.sourceDir.isEmpty()) {
+            throw new IllegalStateException("stock CANBUS sourceDir is empty");
+        }
+
+        StringBuilder dexPath = new StringBuilder(ai.sourceDir);
+        if (ai.splitSourceDirs != null) {
+            for (String split : ai.splitSourceDirs) {
+                if (split != null && !split.isEmpty()) dexPath.append(File.pathSeparator).append(split);
+            }
+        }
+
+        PathClassLoader loader = new PathClassLoader(dexPath.toString(), context.getClassLoader());
+        try {
+            Class.forName(SERVICE_DESCRIPTOR, false, loader);
+            Class.forName(CALLBACK_DESCRIPTOR, false, loader);
+        } catch (Throwable t) {
+            IllegalStateException failure = new IllegalStateException(
+                    "stock AIDL classes not loadable from " + dexPath + ": " + error(root(t)));
+            if (packageContextError != null) failure.addSuppressed(packageContextError);
+            throw failure;
+        }
+
+        diag.append("AIDL loader=PathClassLoader dexPath=").append(dexPath).append('\n');
+        prefs.edit().putString("car_server_aidl_loader",
+                "PathClassLoader: " + dexPath).apply();
+        return loader;
     }
 
     private static int transactionCode(Class<?> stub, String fieldName, int fallback) {
